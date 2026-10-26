@@ -10,7 +10,8 @@ async function body(req){
   for await(const chunk of req){size+=chunk.length;if(size>8192)throw new AppError('invalid-argument','الطلب أكبر من المسموح');chunks.push(chunk);}
   try{const value=JSON.parse(Buffer.concat(chunks).toString('utf8'));if(!value||typeof value!=='object'||Array.isArray(value))throw Error();return value;}catch{throw new AppError('invalid-argument','JSON غير صالح');}
 }
-function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,production=true}){
+function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,projectId,production=true}){
+  const authDomain=projectId?`${projectId}.firebaseapp.com`:'';
   const start=Date.now(),metrics={requests:0,errors:0,inFlight:0};let window=0,attempts=0;
   const files=new Map([['/admin',['index.html','text/html']],['/admin/app.js',['app.js','text/javascript']],['/admin/style.css',['style.css','text/css']]].map(([url,[file,type]])=>[url,{content:readFileSync(path.join(__dirname,'public',file)),type}]));
   function json(res,status,value){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
@@ -22,7 +23,7 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,product
   }
   const server=http.createServer({maxHeaderSize:16384},async(req,res)=>{
     res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Frame-Options','DENY');
-    res.setHeader('Content-Security-Policy',"default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self' https://identitytoolkit.googleapis.com; frame-ancestors 'none'; base-uri 'none'; form-action 'self'");
+    res.setHeader('Content-Security-Policy',`default-src 'none'; script-src 'self' https://www.gstatic.com/firebasejs/12.4.0/ https://apis.google.com; style-src 'self'; img-src 'self'; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; frame-src ${authDomain?'https://'+authDomain:"'none'"}; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`);
     if(production)res.setHeader('Strict-Transport-Security','max-age=31536000');
     let route;try{route=new URL(req.url,'http://localhost');}catch{json(res,400,{error:{status:'INVALID_ARGUMENT',message:'طلب غير صالح'}});return;}
     // Cron/Render health checks never authenticate, read Firestore, or keep a room alive.
@@ -34,7 +35,7 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,product
       const minute=Math.floor(Date.now()/60000);if(window!==minute){window=minute;attempts=0;}
       if(++attempts>6000)throw new AppError('resource-exhausted','طلبات كثيرة');
       if(req.method==='GET'&&files.has(route.pathname)){const file=files.get(route.pathname);res.writeHead(200,{'Content-Type':file.type+'; charset=utf-8'});res.end(file.content);return;}
-      if(req.method==='GET'&&route.pathname==='/admin/config'){json(res,200,{apiKey:webApiKey});return;}
+      if(req.method==='GET'&&route.pathname==='/admin/config'){json(res,200,{apiKey:webApiKey,projectId,authDomain});return;}
       if(req.method==='POST'&&route.pathname.startsWith('/admin/')){
         if(req.headers.origin!==origin)throw new AppError('permission-denied','مصدر الطلب غير مسموح');
       }

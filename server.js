@@ -16,7 +16,7 @@ const adminUids=new Set((process.env.ADMIN_UIDS||'').split(',').map(s=>s.trim())
 if(!adminUids.size)throw Error('ADMIN_UIDS must contain at least one Firebase Authentication UID');
 initializeApp({credential:applicationDefault(),projectId});
 const db=getFirestore(databaseId),auth=getAuth(),execute=createService(db);
-const server=createHttpServer({auth,execute,admin:createAdmin(db,auth,adminUids),adminUids,origin,webApiKey:process.env.FIREBASE_WEB_API_KEY,production});
+const server=createHttpServer({auth,execute,admin:createAdmin(db,auth,adminUids),adminUids,origin,projectId,webApiKey:process.env.FIREBASE_WEB_API_KEY,production});
 let cleaning=false;
 const cleanup=setInterval(async()=>{
   if(cleaning)return;cleaning=true;

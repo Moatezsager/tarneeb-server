@@ -10,12 +10,15 @@ test('HTTP boundary verifies identity, revocation, admin cookies, origin and pri
     async createSessionCookie(){return 'fixture-session';},
     async verifySessionCookie(cookie,revoked){assert.equal(revoked,true);assert.equal(cookie,'fixture-session');return {uid:'owner'};}
   };
-  const server=createHttpServer({auth,execute:async(uid,data)=>{executed++;if(data.fail)throw Error('private credential');return {uid};},admin:async()=>({items:[]}),adminUids:new Set(['owner']),origin:'https://fixture.invalid',webApiKey:'public-fixture'});
+  const server=createHttpServer({auth,execute:async(uid,data)=>{executed++;if(data.fail)throw Error('private credential');return {uid};},admin:async()=>({items:[]}),adminUids:new Set(['owner']),origin:'https://fixture.invalid',webApiKey:'public-fixture',projectId:'demo-tarneeb'});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
   const base=`http://127.0.0.1:${server.address().port}`;
   const post=(path,data,headers={})=>fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json',...headers},body:JSON.stringify(data)});
   assert.equal((await fetch(base+'/health')).status,200);assert.equal(verified,0);assert.equal(executed,0);
+  assert.deepEqual(await fetch(base+'/admin/config').then(r=>r.json()),{apiKey:'public-fixture',projectId:'demo-tarneeb',authDomain:'demo-tarneeb.firebaseapp.com'});
+  const page=await fetch(base+'/admin');assert((await page.text()).includes('id="google-login"'));
+  assert(page.headers.get('content-security-policy').includes('frame-src https://demo-tarneeb.firebaseapp.com'));
   assert.equal((await post('/online',{data:{}})).status,401);
   assert.equal((await post('/online',{data:{}},{Authorization:'Bearer revoked'})).status,401);
   const identity=await post('/online',{data:{uid:'victim'}},{Authorization:'Bearer player'});

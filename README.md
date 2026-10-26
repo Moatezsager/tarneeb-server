@@ -37,7 +37,7 @@ firebase deploy --only "firestore:rules,firestore:indexes" --project gen-lang-cl
 
 ## لوحة الإدارة
 
-افتح /admin. استخدم حساب Firebase Email/Password موجودًا ومعرفه ضمن ADMIN_UIDS. يجب تفعيل هذا المزود في Firebase. حساب Google فقط يحتاج إعداد طريقة بريد/كلمة مرور مناسبة بواسطة مالكه؛ لا ينشئ الخادم كلمة مرور تلقائيًا.
+افتح /admin. استخدم زر Google أو حساب Firebase Email/Password؛ يجب أن يكون UID الحساب ضمن ADMIN_UIDS. فعّل مزود الدخول المطلوب في Firebase. تسجيل الدخول عبر Google لا يحتاج إعداد كلمة مرور للوحة.
 
 الجلسة Cookie لمدة 8 ساعات، HttpOnly وSecure وSameSite=Strict في الإنتاج. يتحقق الخادم من إلغاء الجلسات والحظر، ومن أصل عمليات الإدارة. تعرض اللوحة المستخدمين على صفحات وآخر 30 غرفة وآخر 30 سجل إدارة. تتيح حظر/إعادة تفعيل المستخدم وإغلاق الغرفة دون كشف الأوراق السرية. لا يمكن حظر حساب إداري من اللوحة.
 
@@ -59,3 +59,9 @@ firebase deploy --only "firestore:rules,firestore:indexes" --project gen-lang-cl
 - معالجة مهلة الدور تتم عند استطلاع الغرفة؛ إذا انقطع الجميع تستأنف عند العودة. لا يوجد مؤقت دائم لكل غرفة.
 - تنظيف المنتهي كل ساعة أثناء تشغيل الخادم، حتى 100 وثيقة لكل مجموعة في الدورة، دون خدمة TTL مدفوعة. سجلات الإدارة لا تحذف تلقائيًا؛ راقب نموها.
 - لا يوجد اختبار حمل إنتاجي أو ضمان ضد DDoS؛ حدود الطلبات دفاع أولي والمجانية لا تعني سعة غير محدودة.
+
+### دخول الإدارة عبر Google
+
+زر Google يستخدم Firebase Auth بنافذة منبثقة وجلسة مؤقتة في الذاكرة، ثم يستبدلها بجلسة الإدارة HttpOnly. لا يحتاج سر OAuth Desktop أو كلمة مرور Google داخل اللوحة. يبقى UID ضمن ADMIN_UIDS شرطًا إلزاميًا، ولا يمنح تسجيل Google صلاحية إدارة تلقائية.
+
+فعّل Google في Firebase Authentication → Sign-in method، وأضف `tarneeb-server-kxqf.onrender.com` في Authentication → Settings → Authorized domains (دون https أو مسار). للنشر على نطاق مختلف أضف ذلك النطاق. اسمح بالنوافذ المنبثقة عند طلب المتصفح. يعتمد authDomain على FIREBASE_PROJECT_ID والنطاق الافتراضي firebaseapp.com.
