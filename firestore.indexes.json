@@ -1,0 +1,12 @@
+{
+  "indexes": [
+    {"collectionGroup":"rooms","queryScope":"COLLECTION","fields":[{"fieldPath":"protocolVersion","order":"ASCENDING"},{"fieldPath":"updatedAt","order":"DESCENDING"}]},
+    {"collectionGroup":"rooms","queryScope":"COLLECTION","fields":[{"fieldPath":"protocolVersion","order":"ASCENDING"},{"fieldPath":"status","order":"ASCENDING"},{"fieldPath":"isPublic","order":"ASCENDING"}]},
+    {"collectionGroup":"friendRequests","queryScope":"COLLECTION","fields":[{"fieldPath":"toUid","order":"ASCENDING"},{"fieldPath":"status","order":"ASCENDING"}]},
+    {"collectionGroup":"roomInvites","queryScope":"COLLECTION","fields":[{"fieldPath":"toUid","order":"ASCENDING"},{"fieldPath":"status","order":"ASCENDING"}]}
+  ],
+  "fieldOverrides": [
+    {"collectionGroup":"roomSecrets","fieldPath":"state","indexes":[]},
+    {"collectionGroup":"operations","fieldPath":"result","indexes":[]}
+  ]
+}
