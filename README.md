@@ -18,7 +18,7 @@ firebase emulators:exec --config firebase.test.json --project demo-tarneeb-secur
 ## النشر على Render Free
 
 1. اربط هذا المستودع بخدمة Web Service مجانية أو استورد render.yaml كـ Blueprint. اترك Root Directory فارغًا. البناء `npm ci --omit=dev` والتشغيل `npm start`.
-2. اضبط PUBLIC_ORIGIN على عنوان الخدمة HTTPS دون شرطة أخيرة أو /online.
+2. اضبط PUBLIC_ORIGIN على عنوان الخدمة HTTPS دون مسار مثل /online أو /admin. يقبل الخادم الشرطة النهائية والمسافات المحيطة ويزيلها تلقائيًا.
 3. اضبط FIREBASE_PROJECT_ID وFIRESTORE_DATABASE_ID وFIREBASE_WEB_API_KEY حسب مشروع Firebase. معرفات المشروع الحالي موجودة في .env.example.
 4. ضع Firebase Authentication UID الخاص بالمسؤول في ADMIN_UIDS؛ يمكن فصل عدة معرفات بفواصل. الاسم والبريد لا يمنحان صلاحيات الإدارة.
 5. أضف حساب خدمة مخصصًا كـ Render Secret File باسم firebase-service-account.json. GOOGLE_APPLICATION_CREDENTIALS مضبوط على /etc/secrets/firebase-service-account.json. امنحه صلاحيات Firestore وFirebase Authentication المطلوبة فقط، لا دور Owner. ملف Google Desktop OAuth ليس حساب خدمة ولا يصلح لهذا الغرض.
