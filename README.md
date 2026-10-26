@@ -26,7 +26,7 @@ firebase emulators:exec --config firebase.test.json --project demo-tarneeb-secur
 7. بعد اختبار الخادم انشر القواعد والفهارس من هذا المستودع:
 
 ```sh
-firebase deploy --only "firestore:rules,firestore:indexes" --project gen-lang-client-0141680917
+firebase deploy --only firestore --project gen-lang-client-0141680917
 ```
 
 انتظر جاهزية الفهارس. القواعد تمنع الكتابة المباشرة من العملاء؛ نسق نشرها مع تحديث اللعبة لأن العميل القديم غير متوافق. إعداد النشر لا يتضمن Cloud Functions أو موارد مدفوعة.
