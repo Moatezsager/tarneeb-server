@@ -67,6 +67,7 @@ test('disconnected host migrates, inactive waiting seats expire and can reconnec
   assert.deepEqual(reply.room.memberUids,['member']);assert.equal((await call('leader','activeRoom')).roomId,'');
   await call('leader','joinRoom',{code,password:''});reply=await call('member','poll',{roomId});
   assert.equal(reply.room.players.length,2);assert.equal(new Set(reply.room.players.map(p=>p.index)).size,2);
+  await call('member','fillBots',{roomId});
   await call('member','start',{roomId});
 });
 test('registration completion persists required details, preserves ID and keeps age private',{skip:!enabled},async()=>{
@@ -116,3 +117,18 @@ test('deployed-rule candidate denies direct mutations, private state and legacy 
   const own=await fetch(`${base}/users/guest`,{headers:{Authorization:`Bearer ${jwt('guest')}`}});assert.equal(own.status,200);
   const noAuth=await fetch(`${base}/users/guest`);assert.equal(noAuth.status,403);
 });
+
+ test('explicit bot seats are host-only, idempotent and replaced by joining humans',{skip:!enabled},async()=>{
+  for(const uid of ['bot-host','bot-guest'])await call(uid,'profile',{name:uid,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
+  const {room}=await call('bot-host','createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''}),roomId=room._id;
+  assert.deepEqual(room.botSeats,[]);
+  await reject(call('bot-host','start',{roomId}),'failed-precondition');
+  const requestId=rid(),filled=await call('bot-host','fillBots',{roomId},requestId);
+  assert.deepEqual(filled.room.botSeats,[1,2,3]);
+  assert.deepEqual(await call('bot-host','fillBots',{roomId},requestId),filled);
+  const joined=await call('bot-guest','joinRoom',{code:room.code,password:''});
+  assert.deepEqual(joined.room.botSeats,[2,3]);assert.equal(joined.room.players.length,2);
+  await reject(call('bot-guest','fillBots',{roomId}),'permission-denied');
+  const started=await call('bot-host','start',{roomId});assert.equal(started.room.status,'playing');assert.deepEqual(started.view.humans,[true,true,false,false]);
+  await reject(call('bot-host','fillBots',{roomId}),'failed-precondition');
+ });
