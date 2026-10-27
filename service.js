@@ -3,6 +3,7 @@ const {randomBytes,scryptSync,timingSafeEqual,createHash} = require('node:crypto
 const {Timestamp,FieldValue} = require('firebase-admin/firestore');
 const {AppError:HttpsError} = require('./errors');
 const engine = require('./engine');
+const {completeProfile,validateProfileEdit}=require('./profile');
 const VERSION=2, HOUR=3600000;
 const fail=(code,message)=>{throw new HttpsError(code,message);};
 const id=(x)=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
@@ -56,7 +57,10 @@ function createService(db, clock=Date.now){
       tx.update(ref(`users/${uid}`),{status:d.online?'online':'offline',lastSeen:stamp(now),updatedAt:stamp(now)});return {status:'ok'};
     }
     if(op==='profile'){
-      keys(d,['name','country','gender','avatar','initialize']);
+      keys(d,['name','age','country','gender','avatar','initialize','complete']);
+      if(d.initialize!==undefined&&typeof d.initialize!=='boolean')fail('invalid-argument','طلب غير صالح');
+      if(d.complete!==undefined&&typeof d.complete!=='boolean')fail('invalid-argument','طلب غير صالح');
+      if(!d.initialize)validateProfileEdit(d);
       const doc=await tx.get(ref(`users/${uid}`)),old=doc.exists?doc.data():{};
       let name=d.initialize&&old.name?old.name:str(d.name??old.name??'لاعب',1,64);
       const country=d.initialize&&old.country?old.country:(d.country??old.country??'LY'),gender=d.initialize&&old.gender?old.gender:(d.gender??old.gender??'other'),avatar=d.initialize&&old.avatar?old.avatar:(d.avatar??old.avatar??'avatar_1');
@@ -67,9 +71,12 @@ function createService(db, clock=Date.now){
       if(reservation.exists&&reservation.data().uid!==uid)searchId=`${country}-${randomBytes(5).toString('hex').toUpperCase()}`;
       if(searchId!==old.searchId){reservation=await tx.get(ref(`searchIds/${searchId}`));if(reservation.exists&&reservation.data().uid!==uid)fail('aborted','أعد المحاولة لحجز المعرف');}
       const stats=await tx.get(ref(`rankedStats/${uid}`));
-      const p={uid,name,searchId,country,gender,avatar,status:'online',lastSeen:stamp(now),updatedAt:stamp(now)};
+      const age=d.initialize?(old.age||0):(d.age??old.age??0);
+      const p={uid,name,age,searchId,country,gender,avatar,status:'online',lastSeen:stamp(now),updatedAt:stamp(now)};
+      p.profileComplete=completeProfile(p);
+      if(d.complete&&!p.profileComplete)fail('invalid-argument','أكمل الاسم والعمر والجنس والبلد والصورة أولًا');
       tx.set(ref(`searchIds/${searchId}`),{uid,createdAt:stamp(now)});tx.set(ref(`users/${uid}`),p,{merge:true});
-      return {profile:{...safeProfile(p),points:stats.data()?.points||0}};
+      return {profile:{...safeProfile(p),age:p.age,profileComplete:p.profileComplete,points:stats.data()?.points||0}};
     }
     if(op==='search'){
       keys(d,['searchId']);const searchId=str(d.searchId,3,32).toUpperCase();if(!/^[A-Z0-9-]+$/.test(searchId))fail('invalid-argument','معرّف غير صالح');
@@ -115,7 +122,7 @@ function createService(db, clock=Date.now){
     }
     if(op==='createRoom'){
       keys(d,['mode','target','difficulty','isPublic','password']);if(!['Teams','FFA'].includes(d.mode)||![31,61,101].includes(d.target)||![0,1,2].includes(d.difficulty)||typeof d.isPublic!=='boolean')fail('invalid-argument','إعدادات غرفة غير صالحة');const password=str(d.password??'',0,64);
-      const me=await profile(tx,uid),active=await tx.get(ref(`activeRooms/${uid}`));if(active.exists){const old=await tx.get(ref(`rooms/${active.data().roomId}`));if(old.exists&&old.data().memberUids.includes(uid)&&old.data().expiresAt.toMillis()>now)fail('failed-precondition','غادر غرفتك الحالية أولًا');}
+      const me=await profile(tx,uid),active=await tx.get(ref(`activeRooms/${uid}`));if(!completeProfile(me))fail('failed-precondition','أكمل ملف اللاعب أولًا');if(active.exists){const old=await tx.get(ref(`rooms/${active.data().roomId}`));if(old.exists&&old.data().memberUids.includes(uid)&&old.data().expiresAt.toMillis()>now)fail('failed-precondition','غادر غرفتك الحالية أولًا');}
       const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',bytes=randomBytes(6),code=Array.from(bytes,x=>alphabet[x%alphabet.length]).join(''),roomId=`v2_${code}`;
       const exists=await tx.get(ref(`rooms/${roomId}`));if(exists.exists)fail('aborted','أعد إنشاء الغرفة');
       const r={_id:roomId,protocolVersion:VERSION,code,hostId:uid,hostName:me.name,status:'waiting',isPublic:d.isPublic,locked:!!password,mode:d.mode,target:d.target,difficulty:d.difficulty,players:[player(me,0)],memberUids:[uid],revision:0,createdAt:stamp(now),updatedAt:stamp(now),expiresAt:stamp(now+6*HOUR)};
@@ -138,6 +145,7 @@ function createService(db, clock=Date.now){
       if(active.exists&&active.data().roomId!==roomId){const old=await tx.get(ref(`rooms/${active.data().roomId}`));if(old.exists&&old.data().memberUids.includes(uid)&&old.data().expiresAt.toMillis()>now)fail('failed-precondition','غادر غرفتك الحالية أولًا');}
       if(invitation&&!r.memberUids.includes(invitation.fromUid))fail('failed-precondition','غادر صاحب الدعوة الغرفة');
       if(!r.memberUids.includes(uid)){
+        if(!completeProfile(me))fail('failed-precondition','أكمل ملف اللاعب أولًا');
         if(r.status!=='waiting'||r.players.length>=4)fail('failed-precondition','الغرفة ممتلئة أو بدأت المباراة');
         if(!invitation&&secret.passwordHash){const password=str(d.password??'',0,64),attempt=passwordHash(password,secret.salt);if(!timingSafeEqual(Buffer.from(attempt,'hex'),Buffer.from(secret.passwordHash,'hex')))fail('permission-denied','رمز الغرفة أو كلمة المرور غير صحيحة');}
         const seat=[0,1,2,3].find(i=>!r.players.some(p=>p.index===i));r.players.push(player(me,seat));r.memberUids.push(uid);
