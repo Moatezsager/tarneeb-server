@@ -70,13 +70,25 @@ function createService(db, clock=Date.now){
       if(old.searchId===searchId&&!reservation.exists){const dup=await tx.get(db.collection('users').where('searchId','==',searchId).limit(2));if(dup.docs.some(x=>x.id!==uid))searchId=`${country}-${randomBytes(5).toString('hex').toUpperCase()}`;}
       if(reservation.exists&&reservation.data().uid!==uid)searchId=`${country}-${randomBytes(5).toString('hex').toUpperCase()}`;
       if(searchId!==old.searchId){reservation=await tx.get(ref(`searchIds/${searchId}`));if(reservation.exists&&reservation.data().uid!==uid)fail('aborted','أعد المحاولة لحجز المعرف');}
-      const stats=await tx.get(ref(`rankedStats/${uid}`));
+      const [stats,wallet]=await tx.getAll(ref(`rankedStats/${uid}`),ref(`wallets/${uid}`));
       const age=d.initialize?(old.age||0):(d.age??old.age??0);
       const p={uid,name,age,searchId,country,gender,avatar,status:'online',lastSeen:stamp(now),updatedAt:stamp(now)};
       p.profileComplete=completeProfile(p);
       if(d.complete&&!p.profileComplete)fail('invalid-argument','أكمل الاسم والعمر والجنس والبلد والصورة أولًا');
       tx.set(ref(`searchIds/${searchId}`),{uid,createdAt:stamp(now)});tx.set(ref(`users/${uid}`),p,{merge:true});
-      return {profile:{...safeProfile(p),age:p.age,profileComplete:p.profileComplete,points:stats.data()?.points||0}};
+      if(!wallet.exists)tx.create(ref(`wallets/${uid}`),{gold:0,createdAt:stamp(now)});
+      return {profile:{...safeProfile(p),age:p.age,profileComplete:p.profileComplete,points:stats.data()?.points||0,gold:wallet.data()?.gold||0}};
+    }
+    if(op==='publicProfile'){
+      keys(d,['uid']);if(!id(d.uid))fail('invalid-argument','معرّف لاعب غير صالح');
+      const p=await profile(tx,d.uid);
+      const [stats,friend,sent,incoming]=await tx.getAll(ref(`rankedStats/${d.uid}`),ref(`users/${uid}/friends/${d.uid}`),ref(`friendRequests/${hash(`${uid}:${d.uid}`)}`),ref(`friendRequests/${hash(`${d.uid}:${uid}`)}`));
+      return {profile:{...safeProfile(p),points:stats.data()?.points||0,games:stats.data()?.games||0,wins:stats.data()?.wins||0},relationship:d.uid===uid?'self':friend.exists?'friends':incoming.data()?.status==='pending'?'incoming':sent.data()?.status==='pending'?'pending':'none'};
+    }
+    if(op==='store'){
+      keys(d,[]);await profile(tx,uid);
+      const wallet=await tx.get(ref(`wallets/${uid}`));
+      return {gold:wallet.data()?.gold||0,items:[]};
     }
     if(op==='search'){
       keys(d,['searchId']);const searchId=str(d.searchId,3,32).toUpperCase();if(!/^[A-Z0-9-]+$/.test(searchId))fail('invalid-argument','معرّف غير صالح');
@@ -189,7 +201,7 @@ function createService(db, clock=Date.now){
     }
     fail('invalid-argument','عملية غير معروفة');
   }
-  const readOps=new Set(['poll','search','friends','requests','invites','listRooms','activeRoom','presence']);
+  const readOps=new Set(['poll','search','friends','requests','invites','listRooms','activeRoom','presence','publicProfile','store']);
   return async function execute(uid,input){
     if(!id(uid))fail('unauthenticated','سجل دخولك أولًا');keys(input,['op','payload','requestId','protocolVersion']);if(input.protocolVersion!==VERSION)fail('failed-precondition','حدّث اللعبة إلى الإصدار الجديد');
     const op=str(input.op,1,32),d=input.payload??{},mutation=!readOps.has(op);if(mutation&&(!id(input.requestId)||input.requestId.length<16))fail('invalid-argument','معرّف عملية مطلوب');
