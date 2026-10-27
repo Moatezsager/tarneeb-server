@@ -14,7 +14,7 @@ const reject=(p,code)=>assert.rejects(p,e=>e.code===code);
 before(async()=>{if(!enabled)return;app=initializeApp({projectId:'demo-tarneeb-secure'},'integration');db=getFirestore(app);api=createService(db,()=>now);});
 after(async()=>{if(db)await db.terminate();if(app)await deleteApp(app);});
 test('atomic profiles, social graph, invitations, room seats, server turns, retries and privacy',{skip:!enabled},async()=>{
-  for(const uid of ['host','guest','third','fourth','fifth'])await call(uid,'profile',{name:uid,initialize:true});
+  for(const uid of ['host','guest','third','fourth','fifth'])await call(uid,'profile',{name:uid,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
   const profiles=await db.collection('users').get();assert.equal(new Set(profiles.docs.map(d=>d.data().searchId)).size,5);
   await reject(call('guest','profile',{uid:'host',name:'fake'}),'invalid-argument');
   await db.doc('users/host').set({legacyField:'preserved'},{merge:true});await call('host','profile',{name:'Changed'});assert.equal((await db.doc('users/host').get()).data().legacyField,'preserved');
@@ -57,7 +57,7 @@ test('atomic profiles, social graph, invitations, room seats, server turns, retr
 });
 function jwt(uid){const n=Math.floor(Date.now()/1000),enc=x=>Buffer.from(JSON.stringify(x)).toString('base64url');return `${enc({alg:'none',typ:'JWT'})}.${enc({iss:'https://securetoken.google.com/demo-tarneeb-secure',aud:'demo-tarneeb-secure',iat:n,exp:n+3600,sub:uid,user_id:uid,firebase:{sign_in_provider:'custom',identities:{}}})}.`;}
 test('disconnected host migrates, inactive waiting seats expire and can reconnect',{skip:!enabled},async()=>{
-  await call('leader','profile',{name:'Leader',initialize:true});await call('member','profile',{name:'Member',initialize:true});
+  for(const uid of ['leader','member'])await call(uid,'profile',{name:uid,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
   const created=await call('leader','createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''});
   const roomId=created.room._id,code=created.room.code;
   await call('member','joinRoom',{code,password:''});
@@ -69,10 +69,24 @@ test('disconnected host migrates, inactive waiting seats expire and can reconnec
   assert.equal(reply.room.players.length,2);assert.equal(new Set(reply.room.players.map(p=>p.index)).size,2);
   await call('member','start',{roomId});
 });
+test('registration completion persists required details, preserves ID and keeps age private',{skip:!enabled},async()=>{
+  const initial=await call('registration-user','profile',{initialize:true,name:'لاعب'});
+  assert.equal(initial.profile.profileComplete,false);
+  await reject(call('registration-user','createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''}),'failed-precondition');
+  await reject(call('registration-user','profile',{name:'معتز',complete:true}),'invalid-argument');
+  const saved=await call('registration-user','profile',{name:'معتز_1999',age:27,gender:'male',country:'LY',avatar:'avatar_12',complete:true});
+  assert.equal(saved.profile.profileComplete,true);assert.equal(saved.profile.age,27);
+  assert.equal(saved.profile.searchId,initial.profile.searchId);
+  const restored=await call('registration-user','profile',{initialize:true,name:'Google name',gender:'other'});
+  assert.equal(restored.profile.age,27);assert.equal(restored.profile.name,'معتز_1999');
+  const found=await call('guest','search',{searchId:initial.profile.searchId});
+  assert.equal(found.profile.avatar,'avatar_12');assert(!('age' in found.profile));
+  assert.equal((await db.doc('users/registration-user').get()).data().age,27);
+});
 test('administrator closes rooms atomically and records account suspension',{skip:!enabled},async()=>{
   const changes=[];
   const admin=createAdmin(db,{updateUser:async(uid,data)=>changes.push([uid,data.disabled]),revokeRefreshTokens:async uid=>changes.push([uid,'revoked'])},new Set(['owner']));
-  await call('admin-room-player','profile',{name:'Fixture',initialize:true});
+  await call('admin-room-player','profile',{name:'Fixture',age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
   const created=await call('admin-room-player','createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''});
   const roomId=created.room._id;
   await admin('owner','closeRoom',{roomId});
