@@ -8,4 +8,4 @@
 - Four Godot suites passed: online_client_test, auth_profile_test, cloud_test, firebase_test. These use mocks/isolated mode, not production player credentials.
 - Use `firebase deploy --only firestore` from this repository. The installed Firebase CLI failed to prepare named-database targets when both firestore:rules and firestore:indexes were selected separately.
 
-Limits: no live two-device match or production load test was run. Free-tier quotas still apply. Earlier requested expanded registration fields/avatar assets are not implemented by this integration verification; the current profile contract supports name, country, gender and avatar, but no age field.
+Limits: no live two-device match or production load test was run. Free-tier quotas still apply. Registration fields and local avatar assets were subsequently implemented; see the Profile completion section in README.md and profile/registration tests.
