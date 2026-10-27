@@ -65,3 +65,9 @@ firebase deploy --only firestore --project gen-lang-client-0141680917
 زر Google يستخدم Firebase Auth بنافذة منبثقة وجلسة مؤقتة في الذاكرة، ثم يستبدلها بجلسة الإدارة HttpOnly. لا يحتاج سر OAuth Desktop أو كلمة مرور Google داخل اللوحة. يبقى UID ضمن ADMIN_UIDS شرطًا إلزاميًا، ولا يمنح تسجيل Google صلاحية إدارة تلقائية.
 
 فعّل Google في Firebase Authentication → Sign-in method، وأضف `tarneeb-server-kxqf.onrender.com` في Authentication → Settings → Authorized domains (دون https أو مسار). للنشر على نطاق مختلف أضف ذلك النطاق. اسمح بالنوافذ المنبثقة عند طلب المتصفح. يعتمد authDomain على FIREBASE_PROJECT_ID والنطاق الافتراضي firebaseapp.com.
+
+## Profile completion
+
+Profile edits validate a 3–24 character Arabic/Unicode letter-and-number name (spaces, underscore and hyphen allowed), integer age 1–120, male/female gender, a supported country code and avatar_1 through avatar_12. `complete:true` requires every field. These bounds validate input; they are not a verified age or age eligibility policy. Email uniqueness and account authentication remain Firebase Authentication responsibilities.
+
+The profile response to its owner includes age and profileComplete; search and friends omit age. Legacy profiles keep their UID/searchId and are prompted by the new Godot client to complete missing data. New room creation/join requires a complete profile; existing room members may resume or leave. The application-default initial profile remains incomplete until explicitly saved. Ship the matching Godot client alongside this server change.
