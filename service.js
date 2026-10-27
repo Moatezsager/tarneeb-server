@@ -125,7 +125,7 @@ function createService(db, clock=Date.now){
       const me=await profile(tx,uid),active=await tx.get(ref(`activeRooms/${uid}`));if(!completeProfile(me))fail('failed-precondition','أكمل ملف اللاعب أولًا');if(active.exists){const old=await tx.get(ref(`rooms/${active.data().roomId}`));if(old.exists&&old.data().memberUids.includes(uid)&&old.data().expiresAt.toMillis()>now)fail('failed-precondition','غادر غرفتك الحالية أولًا');}
       const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',bytes=randomBytes(6),code=Array.from(bytes,x=>alphabet[x%alphabet.length]).join(''),roomId=`v2_${code}`;
       const exists=await tx.get(ref(`rooms/${roomId}`));if(exists.exists)fail('aborted','أعد إنشاء الغرفة');
-      const r={_id:roomId,protocolVersion:VERSION,code,hostId:uid,hostName:me.name,status:'waiting',isPublic:d.isPublic,locked:!!password,mode:d.mode,target:d.target,difficulty:d.difficulty,players:[player(me,0)],memberUids:[uid],revision:0,createdAt:stamp(now),updatedAt:stamp(now),expiresAt:stamp(now+6*HOUR)};
+      const r={_id:roomId,protocolVersion:VERSION,code,hostId:uid,hostName:me.name,status:'waiting',isPublic:d.isPublic,locked:!!password,mode:d.mode,target:d.target,difficulty:d.difficulty,players:[player(me,0)],botSeats:[],memberUids:[uid],revision:0,createdAt:stamp(now),updatedAt:stamp(now),expiresAt:stamp(now+6*HOUR)};
       const salt=randomBytes(16).toString('hex'),secret={salt,passwordHash:password?passwordHash(password,salt):'',presence:{[uid]:now}};
       saveRoom(tx,r,secret,null,now);tx.set(ref(`activeRooms/${uid}`),{roomId});return reply(r,null,uid,now);
     }
@@ -148,11 +148,11 @@ function createService(db, clock=Date.now){
         if(!completeProfile(me))fail('failed-precondition','أكمل ملف اللاعب أولًا');
         if(r.status!=='waiting'||r.players.length>=4)fail('failed-precondition','الغرفة ممتلئة أو بدأت المباراة');
         if(!invitation&&secret.passwordHash){const password=str(d.password??'',0,64),attempt=passwordHash(password,secret.salt);if(!timingSafeEqual(Buffer.from(attempt,'hex'),Buffer.from(secret.passwordHash,'hex')))fail('permission-denied','رمز الغرفة أو كلمة المرور غير صحيحة');}
-        const seat=[0,1,2,3].find(i=>!r.players.some(p=>p.index===i));r.players.push(player(me,seat));r.memberUids.push(uid);
+        const seat=[0,1,2,3].find(i=>!r.players.some(p=>p.index===i));r.players.push(player(me,seat));r.botSeats=(r.botSeats||[]).filter(i=>i!==seat);r.memberUids.push(uid);
       }
       secret.presence[uid]=now;saveRoom(tx,r,secret,state,now);tx.set(ref(`activeRooms/${uid}`),{roomId});if(invitation)tx.update(ref(`roomInvites/${d.inviteId}`),{status:'accepted'});return reply(r,state,uid,now);
     }
-    if(['poll','start','move','nextRound','leave'].includes(op)){
+    if(['poll','fillBots','start','move','nextRound','leave'].includes(op)){
       keys(d,op==='move'?['roomId','action','value','expectedRevision']:['roomId']);
       const [r,secret,state0]=await roomData(tx,d.roomId);if(!r.memberUids.includes(uid))fail('permission-denied','لم تعد عضوًا في الغرفة');let state=state0;
       if(op==='leave'){
@@ -171,8 +171,12 @@ function createService(db, clock=Date.now){
         const leader=r.players.find(p=>p.status==='connected');
         if(leader){r.hostId=leader.uid;r.hostName=leader.name;changed=true;}
       }
-      if(op==='start'){
+      if(op==='fillBots'){
+        if(uid!==r.hostId)fail('permission-denied','المضيف فقط يضيف البوتات');if(r.status!=='waiting')fail('failed-precondition','بدأت المباراة بالفعل');
+        r.botSeats=[0,1,2,3].filter(i=>!r.players.some(p=>p.index===i));changed=true;
+      }else if(op==='start'){
         if(uid!==r.hostId)fail('permission-denied','المضيف فقط يبدأ المباراة');if(r.status!=='waiting')fail('failed-precondition','بدأت المباراة بالفعل');
+        if([0,1,2,3].some(i=>!r.players.some(p=>p.index===i)&&!(r.botSeats||[]).includes(i)))fail('failed-precondition','انتظر اكتمال اللاعبين أو استكمل المقاعد ببوتات أولًا');
         const names=Array.from({length:4},(_,i)=>r.players.find(p=>p.index===i)?.name||['سالم','عمر','خالد','علي'][i]);state=engine.start(names,r.mode,r.target,r.difficulty);state.swap_preview={};gate(state,'reveal',4500,now);r.status='playing';changed=true;
       }else if(op==='move'){
         if(!state||r.status!=='playing'||state.presentation||!Number.isInteger(d.expectedRevision)||d.expectedRevision!==state.revision||now>=state.turnDueAt)fail('failed-precondition','تغيّر الدور؛ انتظر تحديث الطاولة');
