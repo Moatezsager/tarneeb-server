@@ -111,7 +111,7 @@ test('cleanup rechecks expiry after a concurrent renewal',{skip:!enabled},async(
 test('deployed-rule candidate denies direct mutations, private state and legacy rooms',{skip:!enabled},async()=>{
   const base='http://127.0.0.1:18881/v1/projects/demo-tarneeb-secure/databases/(default)/documents';
   await db.doc('rooms/legacy').set({hostId:'host',password:'fixture',memberUids:['guest'],gameState:{secret:'fixture'}});
-  for(const [uid,path,method] of [['guest','rooms/legacy','GET'],['guest','users/host','GET'],['guest','roomSecrets/anything','GET'],['guest','operations/anything','GET'],['guest','searchIds/anything','PATCH'],['guest','users/guest','PATCH'],['guest','rooms/new','PATCH'],['guest','users/host/friends/guest','PATCH'],['guest','friendRequests/forged','PATCH'],['guest','roomInvites/forged','PATCH'],['guest','rooms/legacy','DELETE']]){
+  for(const [uid,path,method] of [['guest','wallets/guest','PATCH'],['guest','wallets/host','GET'],['guest','rooms/legacy','GET'],['guest','users/host','GET'],['guest','roomSecrets/anything','GET'],['guest','operations/anything','GET'],['guest','searchIds/anything','PATCH'],['guest','users/guest','PATCH'],['guest','rooms/new','PATCH'],['guest','users/host/friends/guest','PATCH'],['guest','friendRequests/forged','PATCH'],['guest','roomInvites/forged','PATCH'],['guest','rooms/legacy','DELETE']]){
     const res=await fetch(`${base}/${path}`,{method,headers:{Authorization:`Bearer ${jwt(uid)}`,'Content-Type':'application/json'},body:method==='PATCH'?JSON.stringify({fields:{uid:{stringValue:'guest'}}}):undefined});assert.equal(res.status,403,`${method} ${path}`);
   }
   const own=await fetch(`${base}/users/guest`,{headers:{Authorization:`Bearer ${jwt('guest')}`}});assert.equal(own.status,200);
@@ -132,3 +132,30 @@ test('deployed-rule candidate denies direct mutations, private state and legacy 
   const started=await call('bot-host','start',{roomId});assert.equal(started.room.status,'playing');assert.deepEqual(started.view.humans,[true,true,false,false]);
   await reject(call('bot-host','fillBots',{roomId}),'failed-precondition');
  });
+
+test('public profiles hide private data and wallets remain server-owned',{skip:!enabled},async()=>{
+  for(const uid of ['social-a','social-b'])await call(uid,'profile',{name:uid,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
+  await db.doc('users/social-b').set({email:'private@example.test',gold:999,points:999},{merge:true});
+  await db.doc('rankedStats/social-b').set({points:24,games:5,wins:2});
+  let result=await call('social-a','publicProfile',{uid:'social-b'});
+  assert.equal(result.relationship,'none');assert.equal(result.profile.points,24);
+  assert.equal(result.profile.games,5);assert.equal(result.profile.wins,2);
+  for(const field of ['email','age','gold','lastSeen'])assert(!(field in result.profile));
+  await call('social-a','requestFriend',{toUid:'social-b'});
+  assert.equal((await call('social-a','publicProfile',{uid:'social-b'})).relationship,'pending');
+  assert.equal((await call('social-b','publicProfile',{uid:'social-a'})).relationship,'incoming');
+  const req=(await call('social-b','requests')).items[0];
+  await call('social-b','answerFriend',{requestId:req._id,accept:true});
+  assert.equal((await call('social-a','publicProfile',{uid:'social-b'})).relationship,'friends');
+  assert.equal((await call('social-a','publicProfile',{uid:'social-a'})).relationship,'self');
+  await reject(call('social-a','publicProfile',{uid:'../secret'}),'invalid-argument');
+  assert.deepEqual(await call('social-a','store'),{gold:0,items:[]});
+  await reject(call('social-a','store',{uid:'social-b'}),'invalid-argument');
+  await reject(call('social-a','profile',{gold:9999}),'invalid-argument');
+  await db.doc('wallets/social-a').update({gold:17});
+  await call('social-a','profile',{initialize:true});
+  assert.equal((await call('social-a','store')).gold,17);
+  await db.doc('wallets/social-a').delete();
+  await Promise.all([call('social-a','profile',{initialize:true}),call('social-a','profile',{initialize:true})]);
+  assert.equal((await call('social-a','store')).gold,0);
+});
