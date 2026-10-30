@@ -13,7 +13,7 @@ const stamp=n=>Timestamp.fromMillis(n);
 const hash=x=>createHash('sha256').update(x).digest('hex');
 function safeProfile(p){return {uid:p.uid,name:p.name,searchId:p.searchId,country:p.country,gender:p.gender,avatar:p.avatar,points:p.points||0,status:p.status==='online'&&p.lastSeen?.toMillis()>Date.now()-60000?'online':'offline'};}
 function player(p,index){return {uid:p.uid,name:p.name,avatar:p.avatar,country:p.country,index,status:'connected'};}
-function publicRoom(r){const {secret,gameState,...data}=r;return {...data,createdAt:r.createdAt.toMillis(),updatedAt:r.updatedAt.toMillis(),expiresAt:r.expiresAt.toMillis()};}
+function publicRoom(r){const {secret,gameState,chatCooldown,chat,...data}=r;return {...data,createdAt:r.createdAt.toMillis(),updatedAt:r.updatedAt.toMillis(),expiresAt:r.expiresAt.toMillis()};}
 function passwordHash(password,salt){return scryptSync(password,salt,32).toString('hex');}
 function gate(state,kind,ms,now){state.presentation=kind;state.presentationUntil=now+ms;state.turnDueAt=now+ms;}
 function nextDeadline(state,room,now){
@@ -34,7 +34,7 @@ function reply(room,state,uid,now){
   const p=room.players.find(p=>p.uid===uid);if(!p)fail('permission-denied','لست عضوًا في الغرفة');
   let view={};
   if(state){view=engine.view(state,p.index);view.presentation_remaining=Math.max(0,(state.presentationUntil-now)/1000);view.turn_remaining=Math.max(0,(state.turnDueAt-now)/1000);view.humans=Array.from({length:4},(_,i)=>room.players.some(p=>p.index===i&&p.status==='connected'));if(state.presentation){view.legal=[];view.available_bids=[];}}
-  return {room:publicRoom(room),view,serverTime:now};
+  return {room:{...publicRoom(room),chat:room.chat||[]},view,serverTime:now};
 }
 function createService(db, clock=Date.now){
   // shortcut: single-instance memory limits reset on restart; share counters before scaling out.
@@ -163,6 +163,22 @@ function createService(db, clock=Date.now){
         const seat=[0,1,2,3].find(i=>!r.players.some(p=>p.index===i));r.players.push(player(me,seat));r.botSeats=(r.botSeats||[]).filter(i=>i!==seat);r.memberUids.push(uid);
       }
       secret.presence[uid]=now;saveRoom(tx,r,secret,state,now);tx.set(ref(`activeRooms/${uid}`),{roomId});if(invitation)tx.update(ref(`roomInvites/${d.inviteId}`),{status:'accepted'});return reply(r,state,uid,now);
+    }
+    if(op==='chat'){
+      keys(d,['roomId','text']);const text=str(d.text,1,160);
+      if(/[\u0000-\u001f\u007f\u202a-\u202e\u2066-\u2069]/u.test(text))fail('invalid-argument','اكتب رسالة قصيرة في سطر واحد');
+      const [r,secret,state]=await roomData(tx,d.roomId);
+      const sender=r.players.find(p=>p.uid===uid);
+      if(!sender||!r.memberUids.includes(uid))fail('permission-denied','الدردشة لأعضاء الغرفة فقط');
+      if(r.status==='finished')fail('failed-precondition','انتهت الغرفة');
+      const cooldown=r.chatCooldown||{};
+      if(now-(cooldown[uid]??0)<3000)fail('resource-exhausted','انتظر ثلاث ثوانٍ بين الرسائل');
+      r.chatCooldown=Object.fromEntries(r.memberUids.map(member=>[member,member===uid?now:(cooldown[member]||0)]));
+      r.chat=[...(r.chat||[]),{id:randomBytes(12).toString('hex'),uid,name:sender.name,text,at:now}].slice(-12);
+      r.revision++;r.updatedAt=stamp(now);
+      // Chat shares the existing poll response and never rewrites cards or turn deadlines.
+      tx.update(ref(`rooms/${r._id}`),{chat:r.chat,chatCooldown:r.chatCooldown,revision:r.revision,updatedAt:r.updatedAt});
+      return reply(r,state,uid,now);
     }
     if(['poll','fillBots','start','move','nextRound','leave'].includes(op)){
       keys(d,op==='move'?['roomId','action','value','expectedRevision']:['roomId']);

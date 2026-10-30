@@ -174,3 +174,31 @@ test('unchanged polls use read-only snapshots without room writes',{skip:!enable
   const heartbeat=await query('poll-reader','poll',{roomId:room._id});
   assert.deepEqual(modes,[true,false]);assert(heartbeat.room.revision>room.revision);
 });
+
+
+test('room chat is member-only, bounded, idempotent and independent of game turns',{skip:!enabled},async()=>{
+  for(const uid of ['chatHost','chatGuest','chatOutsider'])await call(uid,'profile',{name:uid,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
+  const created=await call('chatHost','createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''});
+  const roomId=created.room._id;
+  await call('chatGuest','joinRoom',{code:created.room.code,password:''});
+  await reject(call('chatOutsider','chat',{roomId,text:'hello'}),'permission-denied');
+  for(const text of ['', 'x'.repeat(161), 'bad\nmessage'])await reject(call('chatHost','chat',{roomId,text}),'invalid-argument');
+  await reject(call('chatHost','chat',{roomId,text:'hello',name:'forged'}),'invalid-argument');
+  await call('chatGuest','chat',{roomId,text:'waiting-room message'});
+  const listed=await call('chatOutsider','listRooms');
+  assert(!('chat' in listed.items.find(r=>r._id===roomId)),'public listings must not leak chat');
+  await call('chatHost','fillBots',{roomId});await call('chatHost','start',{roomId});
+  const secretBefore=await db.doc(`roomSecrets/${roomId}`).get();
+  const requestId=rid(),payload={roomId,text:'Good game!'};
+  const responses=await Promise.all([call('chatHost','chat',payload,requestId),call('chatHost','chat',payload,requestId)]);
+  assert.deepEqual(responses[0],responses[1]);assert.equal(responses[0].room.chat.length,2);
+  assert.equal(responses[0].room.chat[1].name,'chatHost');assert(!('chatCooldown' in responses[0].room));
+  await reject(call('chatHost','chat',{roomId,text:'too soon'}),'resource-exhausted');
+  for(let i=0;i<13;i++){now+=3100;await call('chatHost','chat',{roomId,text:`message ${i}`});}
+  const secretAfter=await db.doc(`roomSecrets/${roomId}`).get();
+  assert(secretBefore.updateTime.isEqual(secretAfter.updateTime),'chat must never write game state');
+  const room=(await db.doc(`rooms/${roomId}`).get()).data();assert.equal(room.chat.length,12);
+  assert.equal(new Set(room.chat.map(m=>m.id)).size,12);
+  await call('chatGuest','leave',{roomId});
+  await reject(call('chatGuest','chat',{roomId,text:'left'}),'permission-denied');
+});
