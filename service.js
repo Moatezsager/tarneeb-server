@@ -5,14 +5,17 @@ const {AppError:HttpsError} = require('./errors');
 const engine = require('./engine');
 const {completeProfile,validateProfileEdit}=require('./profile');
 const VERSION=2, HOUR=3600000;
+const CATALOG=[{id:'emerald',name:'إطار الزمرد',price:100},{id:'royal',name:'الإطار الملكي',price:250},{id:'ruby',name:'إطار الياقوت',price:500}];
+const validFrame=x=>CATALOG.some(item=>item.id===x)?x:'';
+const storeView=(wallet,p)=>({gold:wallet?.gold||0,owned:wallet?.owned||[],equipped:validFrame(p.frame),items:CATALOG});
 const fail=(code,message)=>{throw new HttpsError(code,message);};
 const id=(x)=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
 function str(x,min,max){if(typeof x!=='string'||x.trim().length<min||x.length>max)fail('invalid-argument','بيانات غير صالحة');return x.trim();}
 function keys(d,allowed){if(!d||typeof d!=='object'||Array.isArray(d)||Object.keys(d).some(k=>!allowed.includes(k)))fail('invalid-argument','حقول غير مسموحة');}
 const stamp=n=>Timestamp.fromMillis(n);
 const hash=x=>createHash('sha256').update(x).digest('hex');
-function safeProfile(p){return {uid:p.uid,name:p.name,searchId:p.searchId,country:p.country,gender:p.gender,avatar:p.avatar,points:p.points||0,status:p.status==='online'&&p.lastSeen?.toMillis()>Date.now()-60000?'online':'offline'};}
-function player(p,index){return {uid:p.uid,name:p.name,avatar:p.avatar,country:p.country,index,status:'connected'};}
+function safeProfile(p){return {uid:p.uid,name:p.name,searchId:p.searchId,country:p.country,gender:p.gender,avatar:p.avatar,frame:validFrame(p.frame),points:p.points||0,status:p.status==='online'&&p.lastSeen?.toMillis()>Date.now()-60000?'online':'offline'};}
+function player(p,index){return {uid:p.uid,name:p.name,avatar:p.avatar,frame:validFrame(p.frame),country:p.country,index,status:'connected'};}
 function publicRoom(r){const {secret,gameState,chatCooldown,chat,...data}=r;return {...data,createdAt:r.createdAt.toMillis(),updatedAt:r.updatedAt.toMillis(),expiresAt:r.expiresAt.toMillis()};}
 function passwordHash(password,salt){return scryptSync(password,salt,32).toString('hex');}
 function gate(state,kind,ms,now){state.presentation=kind;state.presentationUntil=now+ms;state.turnDueAt=now+ms;}
@@ -47,7 +50,7 @@ function createService(db, clock=Date.now){
     if(state?.winner>=0&&r.status!=='finished'){
       r.status='finished';r.expiresAt=stamp(now+HOUR);
       // Award once in the same transaction as the terminal state; legacy profile points are not trusted.
-      for(const p of r.players){const won=state.mode==='Teams'?p.index%2===state.winner:p.index===state.winner;tx.set(ref(`rankedStats/${p.uid}`),{games:FieldValue.increment(1),wins:FieldValue.increment(won?1:0),points:FieldValue.increment(won?10:2),updatedAt:stamp(now)},{merge:true});}
+      for(const p of r.players){const won=state.mode==='Teams'?p.index%2===state.winner:p.index===state.winner;tx.set(ref(`rankedStats/${p.uid}`),{games:FieldValue.increment(1),wins:FieldValue.increment(won?1:0),points:FieldValue.increment(won?10:2),updatedAt:stamp(now)},{merge:true});if(r.players.length>=2&&p.status==='connected')tx.set(ref(`wallets/${p.uid}`),{gold:FieldValue.increment(won?20:5),updatedAt:stamp(now)},{merge:true});}
     }
     tx.set(ref(`rooms/${r._id}`),r);tx.set(ref(`roomSecrets/${r._id}`),{...secret,state:state?JSON.stringify(state):'',expiresAt:r.expiresAt});
   }
@@ -72,7 +75,7 @@ function createService(db, clock=Date.now){
       if(searchId!==old.searchId){reservation=await tx.get(ref(`searchIds/${searchId}`));if(reservation.exists&&reservation.data().uid!==uid)fail('aborted','أعد المحاولة لحجز المعرف');}
       const [stats,wallet]=await tx.getAll(ref(`rankedStats/${uid}`),ref(`wallets/${uid}`));
       const age=d.initialize?(old.age||0):(d.age??old.age??0);
-      const p={uid,name,age,searchId,country,gender,avatar,status:'online',lastSeen:stamp(now),updatedAt:stamp(now)};
+      const p={uid,name,age,searchId,country,gender,avatar,frame:validFrame(old.frame),status:'online',lastSeen:stamp(now),updatedAt:stamp(now)};
       p.profileComplete=completeProfile(p);
       if(d.complete&&!p.profileComplete)fail('invalid-argument','أكمل الاسم والعمر والجنس والبلد والصورة أولًا');
       tx.set(ref(`searchIds/${searchId}`),{uid,createdAt:stamp(now)});tx.set(ref(`users/${uid}`),p,{merge:true});
@@ -85,10 +88,25 @@ function createService(db, clock=Date.now){
       const [stats,friend,sent,incoming]=await tx.getAll(ref(`rankedStats/${d.uid}`),ref(`users/${uid}/friends/${d.uid}`),ref(`friendRequests/${hash(`${uid}:${d.uid}`)}`),ref(`friendRequests/${hash(`${d.uid}:${uid}`)}`));
       return {profile:{...safeProfile(p),points:stats.data()?.points||0,games:stats.data()?.games||0,wins:stats.data()?.wins||0},relationship:d.uid===uid?'self':friend.exists?'friends':incoming.data()?.status==='pending'?'incoming':sent.data()?.status==='pending'?'pending':'none'};
     }
-    if(op==='store'){
-      keys(d,[]);await profile(tx,uid);
-      const wallet=await tx.get(ref(`wallets/${uid}`));
-      return {gold:wallet.data()?.gold||0,items:[]};
+    if(['store','buyItem','equipItem'].includes(op)){
+      keys(d,op==='store'?[]:['itemId']);const p=await profile(tx,uid);
+      const walletRef=ref(`wallets/${uid}`);
+      const [snapshot,stats]=await tx.getAll(walletRef,ref(`rankedStats/${uid}`));
+      const wallet=snapshot.data()||{gold:0,owned:[]};wallet.owned=wallet.owned||[];
+      if(op!=='store'){
+        const item=CATALOG.find(item=>item.id===d.itemId);
+        if(!item&&!(op==='equipItem'&&d.itemId===''))fail('invalid-argument','عنصر غير متاح');
+        if(op==='buyItem'&&!wallet.owned.includes(item.id)){
+          if(!Number.isSafeInteger(wallet.gold)||wallet.gold<item.price)fail('failed-precondition','رصيد الذهب غير كافٍ');
+          wallet.gold-=item.price;wallet.owned.push(item.id);
+          tx.set(walletRef,{gold:wallet.gold,owned:wallet.owned,updatedAt:stamp(now)},{merge:true});
+        }
+        if(op==='equipItem'){
+          if(d.itemId&&!wallet.owned.includes(d.itemId))fail('permission-denied','اشترِ الإطار أولًا');
+          p.frame=d.itemId;tx.update(ref(`users/${uid}`),{frame:p.frame,updatedAt:stamp(now)});
+        }
+      }
+      return {...storeView(wallet,p),points:stats.data()?.points||0};
     }
     if(op==='search'){
       keys(d,['searchId']);const searchId=str(d.searchId,3,32).toUpperCase();if(!/^[A-Z0-9-]+$/.test(searchId))fail('invalid-argument','معرّف غير صالح');

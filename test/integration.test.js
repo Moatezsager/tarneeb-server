@@ -149,7 +149,7 @@ test('public profiles hide private data and wallets remain server-owned',{skip:!
   assert.equal((await call('social-a','publicProfile',{uid:'social-b'})).relationship,'friends');
   assert.equal((await call('social-a','publicProfile',{uid:'social-a'})).relationship,'self');
   await reject(call('social-a','publicProfile',{uid:'../secret'}),'invalid-argument');
-  assert.deepEqual(await call('social-a','store'),{gold:0,items:[]});
+  assert.equal((await call('social-a','store')).gold,0);assert.equal((await call('social-a','store')).items.length,3);
   await reject(call('social-a','store',{uid:'social-b'}),'invalid-argument');
   await reject(call('social-a','profile',{gold:9999}),'invalid-argument');
   await db.doc('wallets/social-a').update({gold:17});
@@ -201,4 +201,38 @@ test('room chat is member-only, bounded, idempotent and independent of game turn
   assert.equal(new Set(room.chat.map(m=>m.id)).size,12);
   await call('chatGuest','leave',{roomId});
   await reject(call('chatGuest','chat',{roomId,text:'left'}),'permission-denied');
+});
+
+
+test('cosmetic purchases are atomic, owned once, priced by server and equipped only by owner',{skip:!enabled},async()=>{
+  await call('shopper','profile',{name:'shopper',age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
+  await reject(call('shopper','buyItem',{itemId:'emerald'}),'failed-precondition');
+  await reject(call('shopper','equipItem',{itemId:'emerald'}),'permission-denied');
+  await reject(call('shopper','profile',{frame:'royal'}),'invalid-argument');
+  await reject(call('shopper','buyItem',{itemId:'emerald',price:0}),'invalid-argument');
+  await reject(call('shopper','buyItem',{itemId:'unknown'}),'invalid-argument');
+  await db.doc('wallets/shopper').update({gold:300});
+  const requestId=rid();
+  await Promise.all([call('shopper','buyItem',{itemId:'emerald'},requestId),call('shopper','buyItem',{itemId:'emerald'},requestId),call('shopper','buyItem',{itemId:'emerald'})]);
+  let store=await call('shopper','store');assert.equal(store.gold,200);assert.deepEqual(store.owned,['emerald']);
+  await call('shopper','equipItem',{itemId:'emerald'});
+  assert.equal((await call('shopper','publicProfile',{uid:'shopper'})).profile.frame,'emerald');
+  assert.equal((await call('shopper','profile',{initialize:true})).profile.frame,'emerald');
+  assert.equal((await call('shopper','createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''})).room.players[0].frame,'emerald');
+  await call('shopper','equipItem',{itemId:''});assert.equal((await call('shopper','store')).equipped,'');
+});
+
+test('gold rewards are awarded once at completed match and excluded from solo bot rooms',{skip:!enabled},async()=>{
+  for(const uid of ['goldHost','goldGuest','goldSolo'])await call(uid,'profile',{name:uid,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
+  for(const host of ['goldHost','goldSolo']){
+    const created=await call(host,'createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''});const roomId=created.room._id;
+    if(host==='goldHost')await call('goldGuest','joinRoom',{code:created.room.code,password:''});
+    await call(host,'fillBots',{roomId});await call(host,'start',{roomId});
+    const secretRef=db.doc(`roomSecrets/${roomId}`),secret=(await secretRef.get()).data(),state=JSON.parse(secret.state);
+    state.winner=0;state.presentation='';await secretRef.update({state:JSON.stringify(state)});now+=16000;
+    await Promise.all([call(host,'poll',{roomId}),call(host,'poll',{roomId})]);
+    await call(host,'poll',{roomId});
+    assert.equal((await call(host,'store')).gold,host==='goldHost'?20:0);
+  }
+  assert.equal((await call('goldGuest','store')).gold,5);
 });
