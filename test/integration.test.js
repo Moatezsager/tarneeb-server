@@ -47,7 +47,7 @@ test('atomic profiles, social graph, invitations, room seats, server turns, retr
   room=(await db.doc(`rooms/${roomId}`).get()).data();const actor=room.players.find(p=>p.index===state.current).uid,other=room.players.find(p=>p.uid!==actor).uid;
   const card=engine.legal(state,state.current)[0],move={roomId,action:'play',value:card,expectedRevision:state.revision};
   await reject(call(other,'move',move),'invalid-argument');await reject(call(actor,'move',{...move,playerIdx:state.current}),'invalid-argument');await reject(call(actor,'move',{...move,expectedRevision:-1}),'failed-precondition');
-  const moveId=rid();const moved=await call(actor,'move',move,moveId);assert.deepEqual(await call(actor,'move',move,moveId),moved);
+  const moveId=rid();const concurrent=await Promise.all([call(actor,'move',move,moveId),call(actor,'move',move,moveId),...room.players.map(p=>call(p.uid,'poll',{roomId}))]);const moved=concurrent[0];assert.deepEqual(concurrent[1],moved);assert.deepEqual(await call(actor,'move',move,moveId),moved);
   const saved=JSON.parse((await db.doc(`roomSecrets/${roomId}`).get()).data().state);assert.equal(saved.revision,state.revision+1);
   await reject(call(actor,'move',move),'failed-precondition');
   await call('host','leave',{roomId});room=(await db.doc(`rooms/${roomId}`).get()).data();assert.notEqual(room.hostId,'host');assert.equal(room.status,'playing');
@@ -158,4 +158,19 @@ test('public profiles hide private data and wallets remain server-owned',{skip:!
   await db.doc('wallets/social-a').delete();
   await Promise.all([call('social-a','profile',{initialize:true}),call('social-a','profile',{initialize:true})]);
   assert.equal((await call('social-a','store')).gold,0);
+});
+
+test('unchanged polls use read-only snapshots without room writes',{skip:!enabled},async()=>{
+  const modes=[];
+  const observed=createService({doc:p=>db.doc(p),collection:p=>db.collection(p),runTransaction:(fn,options)=>{modes.push(options?.readOnly===true);return db.runTransaction(fn,options);}},()=>now);
+  const query=(uid,op,payload={})=>observed(uid,{op,payload,requestId:rid(),protocolVersion:2});
+  await query('poll-reader','profile',{name:'reader',age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
+  const {room}=await query('poll-reader','createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''});
+  const before=await db.doc(`rooms/${room._id}`).get();modes.length=0;
+  const results=await Promise.all(Array.from({length:8},()=>query('poll-reader','poll',{roomId:room._id})));
+  assert.deepEqual(modes,Array(8).fill(true));assert(results.every(r=>r.room.revision===room.revision));
+  assert((await db.doc(`rooms/${room._id}`).get()).updateTime.isEqual(before.updateTime));
+  now+=16000;modes.length=0;
+  const heartbeat=await query('poll-reader','poll',{roomId:room._id});
+  assert.deepEqual(modes,[true,false]);assert(heartbeat.room.revision>room.revision);
 });

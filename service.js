@@ -51,7 +51,7 @@ function createService(db, clock=Date.now){
     }
     tx.set(ref(`rooms/${r._id}`),r);tx.set(ref(`roomSecrets/${r._id}`),{...secret,state:state?JSON.stringify(state):'',expiresAt:r.expiresAt});
   }
-  async function operate(tx,uid,op,d,now){
+  async function operate(tx,uid,op,d,now,readOnly=false){
     if(op==='presence'){
       keys(d,['online']);if(typeof d.online!=='boolean')fail('invalid-argument','حالة غير صالحة');await profile(tx,uid);
       tx.update(ref(`users/${uid}`),{status:d.online?'online':'offline',lastSeen:stamp(now),updatedAt:stamp(now)});return {status:'ok'};
@@ -197,6 +197,7 @@ function createService(db, clock=Date.now){
       }else if(op==='nextRound'){
         if(!state||state.phase!=='round_end'||state.winner>=0||uid!==r.hostId)fail('failed-precondition','لا يمكن بدء الجولة الآن');engine.nextRound(state);gate(state,'reveal',4500,now);state.swap_preview={};changed=true;
       }else changed=advance(state,r,now)||changed;
+      if(changed&&readOnly)return null;
       if(changed)saveRoom(tx,r,secret,state,now);return reply(r,state,uid,now);
     }
     fail('invalid-argument','عملية غير معروفة');
@@ -213,11 +214,16 @@ function createService(db, clock=Date.now){
     const prior=rateLimits.get(uid),rate=prior?.window===window?prior:{window,count:0,sensitive:0};
     if(rate.count>=180||(sensitive&&rate.sensitive>=12))fail('resource-exhausted','طلبات كثيرة؛ انتظر دقيقة');
     rate.count++;if(sensitive)rate.sensitive++;rateLimits.set(uid,rate);
+    // Unchanged polls use a consistent snapshot without locking out player moves.
+    if(op==='poll'){
+      const snapshot=await db.runTransaction(tx=>operate(tx,uid,op,d,clock(),true),{readOnly:true});
+      if(snapshot!==null)return snapshot;
+    }
     return db.runTransaction(async tx=>{
       const receipt=mutation?ref(`operations/${hash(`${uid}:${input.requestId}`)}`):null;
       const fingerprint=hash(JSON.stringify({op,d}));
       if(receipt){const previous=await tx.get(receipt);if(previous.exists){if(previous.data().fingerprint!==fingerprint)fail('invalid-argument','معرّف عملية مستخدم');return JSON.parse(previous.data().result);}}
-      const result=await operate(tx,uid,op,d,now);
+      const result=await operate(tx,uid,op,d,clock());
       if(receipt)tx.create(receipt,{uid,fingerprint,result:JSON.stringify(result),expiresAt:stamp(now+24*HOUR)});
       return result;
     });
