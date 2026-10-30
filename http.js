@@ -10,7 +10,7 @@ async function body(req){
   for await(const chunk of req){size+=chunk.length;if(size>8192)throw new AppError('invalid-argument','الطلب أكبر من المسموح');chunks.push(chunk);}
   try{const value=JSON.parse(Buffer.concat(chunks).toString('utf8'));if(!value||typeof value!=='object'||Array.isArray(value))throw Error();return value;}catch{throw new AppError('invalid-argument','JSON غير صالح');}
 }
-function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,projectId,production=true}){
+function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,projectId,production=true,webOrigins=[]}){
   const authDomain=projectId?`${projectId}.firebaseapp.com`:'';
   const start=Date.now(),metrics={requests:0,errors:0,inFlight:0};let window=0,attempts=0;
   const files=new Map([['/admin',['index.html','text/html']],['/admin/app.js',['app.js','text/javascript']],['/admin/style.css',['style.css','text/css']]].map(([url,[file,type]])=>[url,{content:readFileSync(path.join(__dirname,'public',file)),type}]));
@@ -28,6 +28,15 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,project
     let route;try{route=new URL(req.url,'http://localhost');}catch{json(res,400,{error:{status:'INVALID_ARGUMENT',message:'طلب غير صالح'}});return;}
     // Cron/Render health checks never authenticate, read Firestore, or keep a room alive.
     if(req.method==='GET'&&route.pathname==='/health'){json(res,200,{status:'ok',protocolVersion:2});return;}
+    if(route.pathname==='/online'&&req.headers.origin){
+      if(!webOrigins.includes(req.headers.origin)){json(res,403,{error:{status:'PERMISSION_DENIED',message:'نطاق اللعبة غير مسموح'}});return;}
+      res.setHeader('Access-Control-Allow-Origin',req.headers.origin);res.setHeader('Vary','Origin');
+      if(req.method==='OPTIONS'){
+        const requested=(req.headers['access-control-request-headers']||'').toLowerCase().split(',').map(x=>x.trim()).filter(Boolean);
+        if(req.headers['access-control-request-method']!=='POST'||requested.some(x=>!['authorization','content-type'].includes(x))){json(res,403,{error:{status:'PERMISSION_DENIED'}});return;}
+        res.setHeader('Access-Control-Allow-Methods','POST');res.setHeader('Access-Control-Allow-Headers','Authorization, Content-Type');res.setHeader('Access-Control-Max-Age','3600');res.writeHead(204);res.end();return;
+      }
+    }
     metrics.requests++;
     if(metrics.inFlight>=32){json(res,503,{error:{status:'UNAVAILABLE',message:'الخادم مشغول؛ أعد المحاولة'}});return;}
     metrics.inFlight++;

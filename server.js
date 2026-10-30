@@ -11,12 +11,13 @@ const production=process.env.NODE_ENV==='production';
 const missing=['FIREBASE_PROJECT_ID','FIRESTORE_DATABASE_ID','PUBLIC_ORIGIN','FIREBASE_WEB_API_KEY'].filter(key=>!process.env[key]?.trim());
 if(missing.length)throw Error('Missing environment variables: '+missing.join(', '));
 const origin=parseOrigin(process.env.PUBLIC_ORIGIN,production);
+const webOrigins=(process.env.WEB_ORIGINS||'').split(',').map(s=>s.trim()).filter(Boolean).map(value=>parseOrigin(value,production));
 if(production&&(process.env.FIRESTORE_EMULATOR_HOST||process.env.FIREBASE_AUTH_EMULATOR_HOST))throw Error('Emulators are forbidden in production');
 const adminUids=new Set((process.env.ADMIN_UIDS||'').split(',').map(s=>s.trim()).filter(Boolean));
 if(!adminUids.size)throw Error('ADMIN_UIDS must contain at least one Firebase Authentication UID');
 initializeApp({credential:applicationDefault(),projectId});
 const db=getFirestore(databaseId),auth=getAuth(),execute=createService(db);
-const server=createHttpServer({auth,execute,admin:createAdmin(db,auth,adminUids),adminUids,origin,projectId,webApiKey:process.env.FIREBASE_WEB_API_KEY,production});
+const server=createHttpServer({auth,execute,admin:createAdmin(db,auth,adminUids),adminUids,origin,webOrigins,projectId,webApiKey:process.env.FIREBASE_WEB_API_KEY,production});
 let cleaning=false;
 const cleanup=setInterval(async()=>{
   if(cleaning)return;cleaning=true;

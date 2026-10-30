@@ -10,12 +10,19 @@ test('HTTP boundary verifies identity, revocation, admin cookies, origin and pri
     async createSessionCookie(){return 'fixture-session';},
     async verifySessionCookie(cookie,revoked){assert.equal(revoked,true);assert.equal(cookie,'fixture-session');return {uid:'owner'};}
   };
-  const server=createHttpServer({auth,execute:async(uid,data)=>{executed++;if(data.fail)throw Error('private credential');return {uid};},admin:async()=>({items:[]}),adminUids:new Set(['owner']),origin:'https://fixture.invalid',webApiKey:'public-fixture',projectId:'demo-tarneeb'});
+  const server=createHttpServer({auth,execute:async(uid,data)=>{executed++;if(data.fail)throw Error('private credential');return {uid};},admin:async()=>({items:[]}),adminUids:new Set(['owner']),origin:'https://fixture.invalid',webOrigins:['https://game.fixture.invalid'],webApiKey:'public-fixture',projectId:'demo-tarneeb'});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
   const base=`http://127.0.0.1:${server.address().port}`;
   const post=(path,data,headers={})=>fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json',...headers},body:JSON.stringify(data)});
   assert.equal((await fetch(base+'/health')).status,200);assert.equal(verified,0);assert.equal(executed,0);
+  const preflight=await fetch(base+'/online',{method:'OPTIONS',headers:{Origin:'https://game.fixture.invalid','Access-Control-Request-Method':'POST','Access-Control-Request-Headers':'authorization,content-type'}});
+  assert.equal(preflight.status,204);assert.equal(preflight.headers.get('Access-Control-Allow-Origin'),'https://game.fixture.invalid');assert.equal(verified,0);
+  assert.equal((await post('/online',{data:{}},{Origin:'https://evil.invalid',Authorization:'Bearer player'})).status,403);
+  const cors=await post('/online',{data:{}},{Origin:'https://game.fixture.invalid',Authorization:'Bearer player'});
+  assert.equal(cors.status,200);assert.equal(cors.headers.get('Access-Control-Allow-Origin'),'https://game.fixture.invalid');assert.equal(cors.headers.get('Access-Control-Allow-Credentials'),null);
+  const missingToken=await post('/online',{data:{}},{Origin:'https://game.fixture.invalid'});assert.equal(missingToken.status,401);assert.equal(missingToken.headers.get('Access-Control-Allow-Origin'),'https://game.fixture.invalid');
+
   assert.deepEqual(await fetch(base+'/admin/config').then(r=>r.json()),{apiKey:'public-fixture',projectId:'demo-tarneeb',authDomain:'demo-tarneeb.firebaseapp.com'});
   const page=await fetch(base+'/admin');assert((await page.text()).includes('id="google-login"'));
   assert(page.headers.get('content-security-policy').includes('frame-src https://demo-tarneeb.firebaseapp.com'));
