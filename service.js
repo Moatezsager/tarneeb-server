@@ -120,6 +120,7 @@ function createService(db, clock=Date.now){
       if(d.cursor){if(!id(d.cursor))fail('invalid-argument','صفحة غير صالحة');q=q.startAfter(d.cursor);}const docs=await tx.get(q.limit(30));
       let items=docs.docs.map(x=>({...x.data(),_id:x.id}));
       if(op==='friends'&&items.length){const profiles=await tx.getAll(...items.map(x=>ref(`users/${x.uid}`)));items=items.map((f,i)=>profiles[i].exists?{...safeProfile(profiles[i].data()),uid:f.uid,_id:f._id}:f);}
+      if(op==='requests' && items.length){ const profiles = await tx.getAll(...items.map(x => ref("users/" + x.fromUid))); items = items.map((r, i) => profiles[i].exists ? {...r, fromName: profiles[i].data().name || r.fromName, fromAvatar: profiles[i].data().avatar || r.fromAvatar, fromSearchId: profiles[i].data().searchId || "", fromCountry: profiles[i].data().country || "LY"} : r); }
       if(op==='invites')items=items.filter(x=>x.expiresAt?.toMillis()>now);
       return {items:items.map(x=>({...x,createdAt:x.createdAt?.toMillis()||0,updatedAt:x.updatedAt?.toMillis()||0,expiresAt:x.expiresAt?.toMillis()||0})),cursor:docs.size===30?docs.docs.at(-1).id:''};
     }
