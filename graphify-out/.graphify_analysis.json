@@ -1,32 +1,9 @@
 {
   "communities": {
     "0": [
-      "package",
-      "package_dependencies",
-      "package_dependencies_firebase_admin",
-      "package_engines",
-      "package_engines_node",
-      "package_main",
-      "package_name",
-      "package_private",
-      "package_scripts",
-      "package_scripts_start",
-      "package_scripts_test",
-      "ref_firebase_admin",
-      "ref_node_crypto",
-      "test_integration_test",
-      "test_integration_test_assert",
-      "test_integration_test_call",
-      "test_integration_test_getfirestore_timestamp",
-      "test_integration_test_initializeapp_deleteapp",
-      "test_integration_test_jwt",
-      "test_integration_test_now",
-      "test_integration_test_randombytes",
-      "test_integration_test_reject",
-      "test_integration_test_rid",
-      "test_integration_test_test_before_after"
-    ],
-    "1": [
+      "c_users_level_up_godot_tarneeb_server_errors_apperror",
+      "c_users_level_up_godot_tarneeb_server_profile_completeprofile",
+      "c_users_level_up_godot_tarneeb_server_profile_validateprofileedit",
       "service",
       "service_advance",
       "service_catalog",
@@ -52,32 +29,32 @@
       "service_timestamp_fieldvalue",
       "service_validframe"
     ],
-    "2": [
+    "1": [
       "admin",
       "admin_createadmin",
       "admin_timestamp",
       "admin_validid",
       "errors",
-      "errors_apperror",
-      "errors_apperror_constructor",
-      "http",
-      "http_body",
-      "http_createhttpserver",
-      "http_createhttpserver_adminsession",
-      "http_createhttpserver_json",
-      "http_http",
-      "http_path",
-      "http_readfilesync",
-      "http_statuscodes",
-      "ref_node_http",
+      "ref_node_crypto",
       "test_http_test",
       "test_http_test_assert",
       "test_http_test_createsessioncookie",
       "test_http_test_test",
       "test_http_test_verifyidtoken",
-      "test_http_test_verifysessioncookie"
+      "test_http_test_verifysessioncookie",
+      "test_integration_test",
+      "test_integration_test_assert",
+      "test_integration_test_call",
+      "test_integration_test_getfirestore_timestamp",
+      "test_integration_test_initializeapp_deleteapp",
+      "test_integration_test_jwt",
+      "test_integration_test_now",
+      "test_integration_test_randombytes",
+      "test_integration_test_reject",
+      "test_integration_test_rid",
+      "test_integration_test_test_before_after"
     ],
-    "3": [
+    "2": [
       "engine",
       "engine_act",
       "engine_ai",
@@ -100,19 +77,21 @@
       "engine_trickwinner",
       "engine_view"
     ],
-    "4": [
+    "3": [
+      "errors_apperror",
+      "errors_apperror_constructor",
+      "http",
+      "http_body",
+      "http_createhttpserver",
+      "http_createhttpserver_adminsession",
+      "http_createhttpserver_json",
+      "http_http",
+      "http_path",
+      "http_readfilesync",
+      "http_statuscodes",
       "ref_node_fs",
+      "ref_node_http",
       "ref_node_path",
-      "ref_node_vm",
-      "test_google_login_test",
-      "test_google_login_test_append",
-      "test_google_login_test_assert",
-      "test_google_login_test_readfilesync",
-      "test_google_login_test_replacechildren",
-      "test_google_login_test_setcustomparameters",
-      "test_google_login_test_test",
-      "test_google_login_test_toggle",
-      "test_google_login_test_vm",
       "test_parity_test",
       "test_parity_test_assert",
       "test_parity_test_fixture",
@@ -120,7 +99,7 @@
       "test_parity_test_path",
       "test_parity_test_test"
     ],
-    "5": [
+    "4": [
       "profile",
       "profile_completeprofile",
       "profile_countries",
@@ -139,7 +118,7 @@
       "test_profile_test_assert",
       "test_profile_test_test"
     ],
-    "6": [
+    "5": [
       "config",
       "config_parseorigin",
       "server",
@@ -157,7 +136,7 @@
       "server_weborigins",
       "service_removeexpired"
     ],
-    "7": [
+    "6": [
       "render",
       "render_envvars_key",
       "render_envvars_sync",
@@ -173,6 +152,20 @@
       "render_services_startcommand",
       "render_services_type"
     ],
+    "7": [
+      "package",
+      "package_dependencies",
+      "package_dependencies_firebase_admin",
+      "package_engines",
+      "package_engines_node",
+      "package_main",
+      "package_name",
+      "package_private",
+      "package_scripts",
+      "package_scripts_start",
+      "package_scripts_test",
+      "ref_firebase_admin"
+    ],
     "8": [
       "public_app",
       "public_app_actionbutton",
@@ -185,18 +178,31 @@
       "public_app_preparegoogle",
       "public_app_showdashboard",
       "public_app_showlogin"
+    ],
+    "9": [
+      "ref_node_vm",
+      "test_google_login_test",
+      "test_google_login_test_append",
+      "test_google_login_test_assert",
+      "test_google_login_test_readfilesync",
+      "test_google_login_test_replacechildren",
+      "test_google_login_test_setcustomparameters",
+      "test_google_login_test_test",
+      "test_google_login_test_toggle",
+      "test_google_login_test_vm"
     ]
   },
   "cohesion": {
-    "0": 0.08695652173913043,
-    "1": 0.18840579710144928,
-    "2": 0.13043478260869565,
-    "3": 0.23333333333333334,
-    "4": 0.1111111111111111,
-    "5": 0.17647058823529413,
-    "6": 0.15,
-    "7": 0.14285714285714285,
-    "8": 0.32727272727272727
+    "0": 0.15669515669515668,
+    "1": 0.09881422924901186,
+    "2": 0.23333333333333334,
+    "3": 0.12631578947368421,
+    "4": 0.17647058823529413,
+    "5": 0.15,
+    "6": 0.14285714285714285,
+    "7": 0.18181818181818182,
+    "8": 0.32727272727272727,
+    "9": 0.2
   },
   "gods": [
     {
@@ -207,7 +213,7 @@
     {
       "id": "errors_apperror",
       "label": "AppError",
-      "degree": 11
+      "degree": 10
     },
     {
       "id": "render_services",
@@ -230,27 +236,38 @@
       "degree": 7
     },
     {
-      "id": "http_createhttpserver",
-      "label": "createHttpServer()",
-      "degree": 7
-    },
-    {
       "id": "engine_ai",
       "label": "ai()",
       "degree": 7
     },
     {
-      "id": "profile_validateprofileedit",
-      "label": "validateProfileEdit()",
+      "id": "http_createhttpserver",
+      "label": "createHttpServer()",
       "degree": 7
     },
     {
       "id": "admin_createadmin",
       "label": "createAdmin()",
       "degree": 6
+    },
+    {
+      "id": "engine_act",
+      "label": "act()",
+      "degree": 6
     }
   ],
   "surprises": [
+    {
+      "source": "createAdmin()",
+      "target": "AppError",
+      "source_files": [
+        "admin.js",
+        "errors.js"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "bridges separate communities"
+    },
     {
       "source": "adminSession()",
       "target": "AppError",
@@ -294,53 +311,37 @@
       "confidence": "EXTRACTED",
       "relation": "calls",
       "why": "bridges separate communities"
-    },
-    {
-      "source": "createAdmin()",
-      "target": "AppError",
-      "source_files": [
-        "admin.js",
-        "errors.js"
-      ],
-      "confidence": "EXTRACTED",
-      "relation": "calls",
-      "why": "cross-file semantic connection"
     }
   ],
   "questions": [
     {
       "type": "bridge_node",
-      "question": "Why does `firebase-admin` connect `integration.test.js` to `service.js`, `http.js`, `server.js`?",
-      "why": "High betweenness centrality (0.108) - this node is a cross-community bridge."
+      "question": "Why does `firebase-admin` connect `services` to `integration.test.js`, `service.js`, `profile.js`?",
+      "why": "High betweenness centrality (0.107) - this node is a cross-community bridge."
     },
     {
       "type": "low_cohesion",
-      "question": "Should `integration.test.js` be split into smaller, more focused modules?",
-      "why": "Cohesion score 0.08695652173913043 - nodes in this community are weakly interconnected."
+      "question": "Should `service.js` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.09881422924901186 - nodes in this community are weakly interconnected."
     },
     {
       "type": "bridge_node",
-      "question": "Why does `AppError` connect `http.js` to `service.js`, `profile.js`?",
-      "why": "High betweenness centrality (0.043) - this node is a cross-community bridge."
+      "question": "Why does `AppError` connect `engine.js` to `service.js`, `google-login.test.js`?",
+      "why": "High betweenness centrality (0.029) - this node is a cross-community bridge."
     },
     {
       "type": "low_cohesion",
-      "question": "Should `http.js` be split into smaller, more focused modules?",
-      "why": "Cohesion score 0.13043478260869565 - nodes in this community are weakly interconnected."
+      "question": "Should `engine.js` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.12631578947368421 - nodes in this community are weakly interconnected."
     },
     {
       "type": "bridge_node",
-      "question": "Why does `createService()` connect `service.js` to `integration.test.js`, `server.js`?",
-      "why": "High betweenness centrality (0.025) - this node is a cross-community bridge."
+      "question": "Why does `createService()` connect `integration.test.js` to `service.js`, `profile.js`?",
+      "why": "High betweenness centrality (0.026) - this node is a cross-community bridge."
     },
     {
       "type": "low_cohesion",
-      "question": "Should `google-login.test.js` be split into smaller, more focused modules?",
-      "why": "Cohesion score 0.1111111111111111 - nodes in this community are weakly interconnected."
-    },
-    {
-      "type": "low_cohesion",
-      "question": "Should `services` be split into smaller, more focused modules?",
+      "question": "Should `server.js` be split into smaller, more focused modules?",
       "why": "Cohesion score 0.14285714285714285 - nodes in this community are weakly interconnected."
     }
   ]

@@ -81,10 +81,10 @@
     "semantic_hash": "079872ce80010d1003d969c1e14d42e4"
   },
   "service.js": {
-    "mtime": 1793451803.354602,
-    "seen": 1793453359.4378123,
-    "ast_hash": "6bb9092b145d2d5ea2908c21d393dc6d",
-    "semantic_hash": "6bb9092b145d2d5ea2908c21d393dc6d"
+    "mtime": 1793454710.519943,
+    "seen": 1793455261.28207,
+    "ast_hash": "b6c7f2e845263223295716be8ffca5c8",
+    "semantic_hash": "b6c7f2e845263223295716be8ffca5c8"
   },
   "test/config.test.js": {
     "mtime": 1793025525.748382,

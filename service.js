@@ -86,7 +86,7 @@ function createService(db, clock=Date.now){
       keys(d,['uid']);if(!id(d.uid))fail('invalid-argument','معرّف لاعب غير صالح');
       const p=await profile(tx,d.uid);
       const [stats,friend,sent,incoming]=await tx.getAll(ref(`rankedStats/${d.uid}`),ref(`users/${uid}/friends/${d.uid}`),ref(`friendRequests/${hash(`${uid}:${d.uid}`)}`),ref(`friendRequests/${hash(`${d.uid}:${uid}`)}`));
-      return {profile:{...safeProfile(p),points:stats.data()?.points||0,games:stats.data()?.games||0,wins:stats.data()?.wins||0},relationship:d.uid===uid?'self':friend.exists?'friends':incoming.data()?.status==='pending'?'incoming':sent.data()?.status==='pending'?'pending':'none'};
+      return {profile:{...safeProfile(p),points:stats.data()?.points||0,games:stats.data()?.games||0,wins:stats.data()?.wins||0},relationship:d.uid===uid?'self':friend.exists?'friends':incoming.data()?.status==='pending'?'incoming':sent.data()?.status==='pending'?'pending':'none',requestId:incoming.data()?.status==='pending'?hash(`${d.uid}:${uid}`):undefined};
     }
     if(['store','buyItem','equipItem'].includes(op)){
       keys(d,op==='store'?[]:['itemId']);const p=await profile(tx,uid);
@@ -133,7 +133,7 @@ function createService(db, clock=Date.now){
       tx.set(ref(`friendRequests/${reqId}`),{fromUid:uid,toUid:d.toUid,fromName:me.name,fromAvatar:me.avatar,toName:to.name,status:'pending',createdAt:stamp(now),expiresAt:stamp(now+7*24*HOUR)});return {status:'pending'};
     }
     if(op==='answerFriend'){
-      keys(d,['requestId','accept']);if(!id(d.requestId)||typeof d.accept!=='boolean')fail('invalid-argument','طلب غير صالح');const r=await tx.get(ref(`friendRequests/${d.requestId}`)),q=r.data();
+      keys(d,['requestId','accept','fromUid']);const reqId=id(d.requestId)?d.requestId:(id(d.fromUid)?hash(`${d.fromUid}:${uid}`):null);if(!reqId||typeof d.accept!=='boolean')fail('invalid-argument','طلب غير صالح');const r=await tx.get(ref(`friendRequests/${reqId}`)),q=r.data();
       if(!q||q.toUid!==uid)fail('permission-denied','الطلب غير متاح');
       if(q.status!=='pending')return {status:q.status};if(q.fromUid===uid||!id(q.fromUid))fail('failed-precondition','طلب غير صالح');if(!q.createdAt?.toMillis||q.createdAt.toMillis()+7*24*HOUR<now||(q.expiresAt&&q.expiresAt.toMillis()<now))fail('failed-precondition','انتهت صلاحية الطلب');
       const [a,b]=await Promise.all([profile(tx,q.fromUid),profile(tx,uid)]);
