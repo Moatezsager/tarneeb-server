@@ -1,0 +1,347 @@
+{
+  "communities": {
+    "0": [
+      "package",
+      "package_dependencies",
+      "package_dependencies_firebase_admin",
+      "package_engines",
+      "package_engines_node",
+      "package_main",
+      "package_name",
+      "package_private",
+      "package_scripts",
+      "package_scripts_start",
+      "package_scripts_test",
+      "ref_firebase_admin",
+      "ref_node_crypto",
+      "test_integration_test",
+      "test_integration_test_assert",
+      "test_integration_test_call",
+      "test_integration_test_getfirestore_timestamp",
+      "test_integration_test_initializeapp_deleteapp",
+      "test_integration_test_jwt",
+      "test_integration_test_now",
+      "test_integration_test_randombytes",
+      "test_integration_test_reject",
+      "test_integration_test_rid",
+      "test_integration_test_test_before_after"
+    ],
+    "1": [
+      "service",
+      "service_advance",
+      "service_catalog",
+      "service_createservice",
+      "service_createservice_operate",
+      "service_createservice_roomdata",
+      "service_createservice_saveroom",
+      "service_fail",
+      "service_gate",
+      "service_hash",
+      "service_id",
+      "service_keys",
+      "service_nextdeadline",
+      "service_passwordhash",
+      "service_player",
+      "service_publicroom",
+      "service_randombytes_scryptsync_timingsafeequal_createhash",
+      "service_reply",
+      "service_safeprofile",
+      "service_stamp",
+      "service_storeview",
+      "service_str",
+      "service_timestamp_fieldvalue",
+      "service_validframe"
+    ],
+    "2": [
+      "admin",
+      "admin_createadmin",
+      "admin_timestamp",
+      "admin_validid",
+      "errors",
+      "errors_apperror",
+      "errors_apperror_constructor",
+      "http",
+      "http_body",
+      "http_createhttpserver",
+      "http_createhttpserver_adminsession",
+      "http_createhttpserver_json",
+      "http_http",
+      "http_path",
+      "http_readfilesync",
+      "http_statuscodes",
+      "ref_node_http",
+      "test_http_test",
+      "test_http_test_assert",
+      "test_http_test_createsessioncookie",
+      "test_http_test_test",
+      "test_http_test_verifyidtoken",
+      "test_http_test_verifysessioncookie"
+    ],
+    "3": [
+      "engine",
+      "engine_act",
+      "engine_ai",
+      "engine_beats",
+      "engine_bids",
+      "engine_cardname",
+      "engine_clone",
+      "engine_collect",
+      "engine_finish",
+      "engine_legal",
+      "engine_matchwinner",
+      "engine_nextround",
+      "engine_randomint",
+      "engine_rank",
+      "engine_scorebid",
+      "engine_sorthand",
+      "engine_start",
+      "engine_suit",
+      "engine_swapvalue",
+      "engine_trickwinner",
+      "engine_view"
+    ],
+    "4": [
+      "ref_node_fs",
+      "ref_node_path",
+      "ref_node_vm",
+      "test_google_login_test",
+      "test_google_login_test_append",
+      "test_google_login_test_assert",
+      "test_google_login_test_readfilesync",
+      "test_google_login_test_replacechildren",
+      "test_google_login_test_setcustomparameters",
+      "test_google_login_test_test",
+      "test_google_login_test_toggle",
+      "test_google_login_test_vm",
+      "test_parity_test",
+      "test_parity_test_assert",
+      "test_parity_test_fixture",
+      "test_parity_test_fs",
+      "test_parity_test_path",
+      "test_parity_test_test"
+    ],
+    "5": [
+      "profile",
+      "profile_completeprofile",
+      "profile_countries",
+      "profile_validateprofileedit",
+      "profile_validavatar",
+      "profile_validname",
+      "ref_node_assert",
+      "ref_node_test",
+      "test_config_test",
+      "test_config_test_assert",
+      "test_config_test_test",
+      "test_engine_test",
+      "test_engine_test_assert",
+      "test_engine_test_test",
+      "test_profile_test",
+      "test_profile_test_assert",
+      "test_profile_test_test"
+    ],
+    "6": [
+      "config",
+      "config_parseorigin",
+      "server",
+      "server_adminuids",
+      "server_auth",
+      "server_cleanup",
+      "server_db",
+      "server_execute",
+      "server_getauth",
+      "server_getfirestore_timestamp",
+      "server_initializeapp_applicationdefault",
+      "server_missing",
+      "server_origin",
+      "server_server",
+      "server_weborigins",
+      "service_removeexpired"
+    ],
+    "7": [
+      "render",
+      "render_envvars_key",
+      "render_envvars_sync",
+      "render_envvars_value",
+      "render_services",
+      "render_services_buildcommand",
+      "render_services_envvars",
+      "render_services_healthcheckpath",
+      "render_services_name",
+      "render_services_plan",
+      "render_services_region",
+      "render_services_runtime",
+      "render_services_startcommand",
+      "render_services_type"
+    ],
+    "8": [
+      "public_app",
+      "public_app_actionbutton",
+      "public_app_api",
+      "public_app_cell",
+      "public_app_confirmaction",
+      "public_app_load",
+      "public_app_loginbusy",
+      "public_app_notice",
+      "public_app_preparegoogle",
+      "public_app_showdashboard",
+      "public_app_showlogin"
+    ]
+  },
+  "cohesion": {
+    "0": 0.08695652173913043,
+    "1": 0.18840579710144928,
+    "2": 0.13043478260869565,
+    "3": 0.23333333333333334,
+    "4": 0.1111111111111111,
+    "5": 0.17647058823529413,
+    "6": 0.15,
+    "7": 0.14285714285714285,
+    "8": 0.32727272727272727
+  },
+  "gods": [
+    {
+      "id": "service_createservice_operate",
+      "label": "operate()",
+      "degree": 18
+    },
+    {
+      "id": "errors_apperror",
+      "label": "AppError",
+      "degree": 11
+    },
+    {
+      "id": "render_services",
+      "label": "services",
+      "degree": 10
+    },
+    {
+      "id": "service_createservice",
+      "label": "createService()",
+      "degree": 9
+    },
+    {
+      "id": "engine_suit",
+      "label": "suit()",
+      "degree": 8
+    },
+    {
+      "id": "service_fail",
+      "label": "fail()",
+      "degree": 7
+    },
+    {
+      "id": "http_createhttpserver",
+      "label": "createHttpServer()",
+      "degree": 7
+    },
+    {
+      "id": "engine_ai",
+      "label": "ai()",
+      "degree": 7
+    },
+    {
+      "id": "profile_validateprofileedit",
+      "label": "validateProfileEdit()",
+      "degree": 7
+    },
+    {
+      "id": "admin_createadmin",
+      "label": "createAdmin()",
+      "degree": 6
+    }
+  ],
+  "surprises": [
+    {
+      "source": "adminSession()",
+      "target": "AppError",
+      "source_files": [
+        "http.js",
+        "errors.js"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "peripheral node `adminSession()` unexpectedly reaches hub `AppError`"
+    },
+    {
+      "source": "validateProfileEdit()",
+      "target": "AppError",
+      "source_files": [
+        "profile.js",
+        "errors.js"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "bridges separate communities"
+    },
+    {
+      "source": "operate()",
+      "target": "completeProfile()",
+      "source_files": [
+        "service.js",
+        "profile.js"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "bridges separate communities"
+    },
+    {
+      "source": "operate()",
+      "target": "validateProfileEdit()",
+      "source_files": [
+        "service.js",
+        "profile.js"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "bridges separate communities"
+    },
+    {
+      "source": "createAdmin()",
+      "target": "AppError",
+      "source_files": [
+        "admin.js",
+        "errors.js"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "cross-file semantic connection"
+    }
+  ],
+  "questions": [
+    {
+      "type": "bridge_node",
+      "question": "Why does `firebase-admin` connect `integration.test.js` to `service.js`, `http.js`, `server.js`?",
+      "why": "High betweenness centrality (0.108) - this node is a cross-community bridge."
+    },
+    {
+      "type": "low_cohesion",
+      "question": "Should `integration.test.js` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.08695652173913043 - nodes in this community are weakly interconnected."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `AppError` connect `http.js` to `service.js`, `profile.js`?",
+      "why": "High betweenness centrality (0.043) - this node is a cross-community bridge."
+    },
+    {
+      "type": "low_cohesion",
+      "question": "Should `http.js` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.13043478260869565 - nodes in this community are weakly interconnected."
+    },
+    {
+      "type": "bridge_node",
+      "question": "Why does `createService()` connect `service.js` to `integration.test.js`, `server.js`?",
+      "why": "High betweenness centrality (0.025) - this node is a cross-community bridge."
+    },
+    {
+      "type": "low_cohesion",
+      "question": "Should `google-login.test.js` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.1111111111111111 - nodes in this community are weakly interconnected."
+    },
+    {
+      "type": "low_cohesion",
+      "question": "Should `services` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.14285714285714285 - nodes in this community are weakly interconnected."
+    }
+  ]
+}
