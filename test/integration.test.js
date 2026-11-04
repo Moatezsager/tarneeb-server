@@ -133,6 +133,47 @@ test('deployed-rule candidate denies direct mutations, private state and legacy 
   await reject(call('bot-host','fillBots',{roomId}),'failed-precondition');
  });
 
+test('profile visibility, last seen and cancelling requests preserve relationship state',{skip:!enabled},async()=>{
+  for(const uid of ['profile-a','profile-b','profile-c'])await call(uid,'profile',{name:uid,age:27,gender:'female',country:'LY',avatar:'avatar_2',complete:true});
+  let view=await call('profile-a','publicProfile',{uid:'profile-b'});
+  assert(!('age' in view.profile));assert.equal(view.profile.gender,'female');assert.equal(typeof view.profile.lastSeenAt,'number');
+  await reject(call('profile-b','profile',{showAge:'true'}),'invalid-argument');
+  await call('profile-b','profile',{showAge:true});
+  assert.equal((await call('profile-a','publicProfile',{uid:'profile-b'})).profile.age,27);
+  await call('profile-b','profile',{initialize:true});
+  assert.equal((await call('profile-a','publicProfile',{uid:'profile-b'})).profile.age,27);
+  await call('profile-b','profile',{showAge:false});
+  assert(!('age' in (await call('profile-a','publicProfile',{uid:'profile-b'})).profile));
+  assert.equal((await call('profile-b','publicProfile',{uid:'profile-b'})).profile.age,27);
+  await call('profile-b','presence',{online:false});
+  view=await call('profile-a','publicProfile',{uid:'profile-b'});
+  assert.equal(view.profile.status,'offline');assert.equal(view.profile.lastSeenAt,now);
+  await call('profile-a','requestFriend',{toUid:'profile-b'});
+  await call('profile-c','cancelFriend',{toUid:'profile-b'});
+  assert.equal((await call('profile-a','publicProfile',{uid:'profile-b'})).relationship,'pending');
+  const cancelId=rid();await call('profile-a','cancelFriend',{toUid:'profile-b'},cancelId);
+  await call('profile-a','cancelFriend',{toUid:'profile-b'},cancelId);
+  assert.equal((await call('profile-b','requests')).items.length,0);
+  now+=60001;await call('profile-a','requestFriend',{toUid:'profile-b'});
+  const request=(await call('profile-b','requests')).items[0];
+  await call('profile-b','answerFriend',{requestId:request._id,accept:true});
+  await reject(call('profile-a','cancelFriend',{toUid:'profile-b'}),'failed-precondition');
+  assert.equal((await call('profile-a','publicProfile',{uid:'profile-b'})).relationship,'friends');
+  await call('profile-a','requestFriend',{toUid:'profile-c'});
+  const racing=(await call('profile-c','requests')).items[0];
+  await Promise.allSettled([call('profile-a','cancelFriend',{toUid:'profile-c'}),call('profile-c','answerFriend',{requestId:racing._id,accept:true})]);
+  const a=(await db.doc('users/profile-a/friends/profile-c').get()).exists;
+  const c=(await db.doc('users/profile-c/friends/profile-a').get()).exists;
+  assert.equal(a,c);
+  assert.equal(a,(await db.doc('friendRequests/'+racing._id).get()).data().status==='accepted');
+  await call('profile-a','removeFriend',{toUid:'profile-b'});
+  now+=60001;await call('profile-a','requestFriend',{toUid:'profile-b'});
+  now+=7*24*3600000+1;
+  assert.equal((await call('profile-b','publicProfile',{uid:'profile-a'})).relationship,'none');
+  await call('profile-b','requestFriend',{toUid:'profile-a'});
+  assert.equal((await call('profile-a','publicProfile',{uid:'profile-b'})).relationship,'incoming');
+});
+
 test('public profiles hide private data and wallets remain server-owned',{skip:!enabled},async()=>{
   for(const uid of ['social-a','social-b'])await call(uid,'profile',{name:uid,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
   await db.doc('users/social-b').set({email:'private@example.test',gold:999,points:999},{merge:true});
@@ -167,12 +208,14 @@ test('unchanged polls use read-only snapshots without room writes',{skip:!enable
   await query('poll-reader','profile',{name:'reader',age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
   const {room}=await query('poll-reader','createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''});
   const before=await db.doc(`rooms/${room._id}`).get();modes.length=0;
-  const results=await Promise.all(Array.from({length:8},()=>query('poll-reader','poll',{roomId:room._id})));
+  const results=await Promise.all(Array.from({length:8},(_,i)=>query('poll-reader','poll',{roomId:room._id,latencyMs:200+i})));
   assert.deepEqual(modes,Array(8).fill(true));assert(results.every(r=>r.room.revision===room.revision));
   assert((await db.doc(`rooms/${room._id}`).get()).updateTime.isEqual(before.updateTime));
   now+=16000;modes.length=0;
-  const heartbeat=await query('poll-reader','poll',{roomId:room._id});
+  const heartbeat=await query('poll-reader','poll',{roomId:room._id,latencyMs:300});
   assert.deepEqual(modes,[true,false]);assert(heartbeat.room.revision>room.revision);
+  assert.equal(heartbeat.room.players[0].latencyMs,300);assert.equal(heartbeat.room.players[0].latencyAt,now);
+  for(const latencyMs of [-1,60001,1.2,'300',null])await reject(query('poll-reader','poll',{roomId:room._id,latencyMs}),'invalid-argument');
 });
 
 

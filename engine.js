@@ -72,7 +72,7 @@ function finish(s){
 function collect(s){
   if(s.phase!=='collecting')return false;
   const w=trickWinner(s),q=s.trick.indexOf(10),a=s.trick.indexOf(12);
-  if(s.round>1&&q>=0&&a>=0){s.trap=[a,q];s.scores[a]+=5;s.scores[q]-=5;if(s.mode==='Teams'){s.team_scores[a%2]+=5;s.team_scores[q%2]-=5;}s.message=`ورطة! ${s.names[a]} اصطاد بنت ${s.names[q]} • +5 / −5`;}
+  if(s.round>1&&q>=0&&a>=0){s.trap=[a,q];s.scores[a]+=5;s.scores[q]-=5;if(s.mode==='Teams'){s.team_scores[a%2]+=5;s.team_scores[q%2]-=5;}s.message=`ورطة! ${s.names[a]} اصطاد مجيرة ${s.names[q]} • +5 / −5`;}
   s.taken[w]++;s.tricks++;s.last_trick=[...s.trick];s.played.push(...s.trick.filter(c=>c>=0));s.trick=[-1,-1,-1,-1];s.current=w;s.lead=w;s.phase='playing';if(s.tricks===13)finish(s);s.revision++;return true;
 }
 const swapValue=c=>c===10?-50:rank(c)+(suit(c)===0?20:0);

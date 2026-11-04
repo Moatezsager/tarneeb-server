@@ -27,7 +27,7 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,project
     if(production)res.setHeader('Strict-Transport-Security','max-age=31536000');
     let route;try{route=new URL(req.url,'http://localhost');}catch{json(res,400,{error:{status:'INVALID_ARGUMENT',message:'طلب غير صالح'}});return;}
     // Cron/Render health checks never authenticate, read Firestore, or keep a room alive.
-    if(req.method==='GET'&&route.pathname==='/health'){json(res,200,{status:'ok',protocolVersion:2});return;}
+    if(req.method==='GET'&&route.pathname==='/health'){json(res,200,{status:'ok',protocolVersion:2,buildId:process.env.RENDER_GIT_COMMIT||''});return;}
     if(route.pathname==='/online'&&req.headers.origin){
       if(!webOrigins.includes(req.headers.origin)){json(res,403,{error:{status:'PERMISSION_DENIED',message:'نطاق اللعبة غير مسموح'}});return;}
       res.setHeader('Access-Control-Allow-Origin',req.headers.origin);res.setHeader('Vary','Origin');
