@@ -84,6 +84,11 @@ test('registration completion persists required details, preserves ID and keeps 
   const saved=await call('registration-user','profile',{name:'معتز_1999',age:27,gender:'male',country:'LY',avatar:'avatar_12',complete:true});
   assert.equal(saved.profile.profileComplete,true);assert.equal(saved.profile.age,27);
   assert.equal(saved.profile.searchId,initial.profile.searchId);
+  const userRef=db.doc('users/registration-user'),before=(await userRef.get()).updateTime;
+  const own=await call('registration-user','ownProfile');
+  assert.equal(own.profile.age,27);assert.equal(own.profile.searchId,initial.profile.searchId);
+  assert((await userRef.get()).updateTime.isEqual(before),'returning sign-in does not rewrite the profile');
+  await reject(call('uninitialized','ownProfile'),'not-found');
   const restored=await call('registration-user','profile',{initialize:true,name:'Google name',gender:'other'});
   assert.equal(restored.profile.age,27);assert.equal(restored.profile.name,'معتز_1999');
   const found=await call('guest','search',{searchId:initial.profile.searchId});

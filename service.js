@@ -114,6 +114,16 @@ function createService(db, clock=Date.now){
       keys(d,['online']);if(typeof d.online!=='boolean')fail('invalid-argument','حالة غير صالحة');await profile(tx,uid);
       tx.update(ref(`users/${uid}`),{status:d.online?'online':'offline',lastSeen:stamp(now),updatedAt:stamp(now)});return {status:'ok'};
     }
+    if(op==='ownProfile'){
+      keys(d,[]);
+      const user=(await tx.get(ref(`users/${uid}`))).data();
+      if(user?.deleting)fail('permission-denied','الحساب قيد الحذف');
+      if(user?.uid!==uid||typeof user.profileComplete!=='boolean'||!/^[A-Z0-9-]{3,32}$/.test(user.searchId??''))fail('not-found','ملف اللاعب يحتاج تهيئة');
+      const [stats,wallet]=await tx.getAll(ref(`rankedStats/${uid}`),ref(`wallets/${uid}`));
+      if(!wallet.exists)fail('not-found','ملف اللاعب يحتاج تهيئة');
+      return {profile:{...safeProfile(user),age:user.age||0,showAge:user.showAge===true,
+        profileComplete:completeProfile(user),points:stats.data()?.points||0,gold:wallet.data()?.gold||0}};
+    }
     if(op==='profile'){
       keys(d,['name','age','country','gender','avatar','initialize','complete','showAge']);
       if(d.showAge!==undefined&&typeof d.showAge!=='boolean')fail('invalid-argument','إعداد ظهور العمر غير صالح');
@@ -337,7 +347,7 @@ function createService(db, clock=Date.now){
     }
     fail('invalid-argument','عملية غير معروفة');
   }
-  const readOps=new Set(['poll','search','friends','requests','invites','listRooms','activeRoom','presence','publicProfile','store']);
+  const readOps=new Set(['poll','search','friends','requests','invites','listRooms','activeRoom','presence','ownProfile','publicProfile','store']);
   async function execute(uid,input){
     if(!id(uid))fail('unauthenticated','سجل دخولك أولًا');keys(input,['op','payload','requestId','protocolVersion']);if(input.protocolVersion!==VERSION)fail('failed-precondition','حدّث اللعبة إلى الإصدار الجديد');
     const op=str(input.op,1,32),d=input.payload??{},mutation=!readOps.has(op);if(mutation&&(!id(input.requestId)||input.requestId.length<16))fail('invalid-argument','معرّف عملية مطلوب');
@@ -368,7 +378,7 @@ function createService(db, clock=Date.now){
       const result=await operate(tx,uid,op,d,clock());
       if(receipt)tx.create(receipt,{uid,fingerprint,result:JSON.stringify(result),expiresAt:stamp(now+24*HOUR)});
       return result;
-    });
+    },op==='ownProfile'?{readOnly:true}:undefined);
     if(mutation||op==='poll')pollCache.delete(result?.room?._id??d.roomId);
     if(op==='equipItem')pollCache.clear();
     return result;
