@@ -119,6 +119,16 @@ function createService(db, clock=Date.now){
           const slot=item?.kind??d.slot??'frame';
           if(!['frame','effect'].includes(slot)||(d.slot!==undefined&&d.slot!==slot))fail('invalid-argument','خانة تجهيز غير صالحة');
           if(item&&!wallet.owned.includes(item.id))fail('permission-denied','اشترِ القطعة أولًا');
+          const active=await tx.get(ref(`activeRooms/${uid}`));
+          if(active.exists){
+            const roomRef=ref(`rooms/${active.data().roomId}`);
+            const room=(await tx.get(roomRef)).data();
+            const current=room?.protocolVersion===VERSION&&room.players.find(player=>player.uid===uid);
+            if(current&&room.status!=='finished'&&room.expiresAt.toMillis()>now&&current[slot]!==d.itemId){
+              current[slot]=d.itemId;
+              tx.update(roomRef,{players:room.players,revision:room.revision+1,updatedAt:stamp(now)});
+            }
+          }
           p[slot]=d.itemId;
           tx.update(ref(`users/${uid}`),{[slot]:p[slot],updatedAt:stamp(now)});
         }

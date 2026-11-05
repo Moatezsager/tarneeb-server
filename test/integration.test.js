@@ -271,7 +271,8 @@ test('cosmetic purchases are atomic, owned once, priced by server and equipped o
   const restored=(await call('shopper','profile',{initialize:true})).profile;
   assert.equal(restored.frame,'emerald');
   assert.equal(restored.effect,'comet');
-  const seated=(await call('shopper','createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''})).room.players[0];
+  const room=(await call('shopper','createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''})).room;
+  const seated=room.players[0];
   assert.equal(seated.frame,'emerald');
   assert.equal(seated.effect,'comet');
   store=await call('shopper','equipItem',{itemId:''});
@@ -279,6 +280,11 @@ test('cosmetic purchases are atomic, owned once, priced by server and equipped o
   assert.equal(store.equippedEffect,'comet');
   store=await call('shopper','equipItem',{itemId:'',slot:'effect'});
   assert.equal(store.equippedEffect,'');
+  const updated=(await call('shopper','poll',{roomId:room._id})).room;
+  assert.equal(updated.players[0].frame,'');
+  assert.equal(updated.players[0].effect,'');
+  assert.equal(updated.status,'waiting');
+  assert(updated.revision>room.revision);
 });
 
 test('gold rewards are awarded once at completed match and excluded from solo bot rooms',{skip:!enabled},async()=>{
