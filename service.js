@@ -1,5 +1,5 @@
 'use strict';
-const {randomBytes,scryptSync,timingSafeEqual,createHash} = require('node:crypto');
+const {randomBytes,randomInt,scryptSync,timingSafeEqual,createHash} = require('node:crypto');
 const {Timestamp,FieldValue} = require('firebase-admin/firestore');
 const {AppError:HttpsError} = require('./errors');
 const engine = require('./engine');
@@ -32,6 +32,18 @@ function player(p,index){return {uid:p.uid,name:p.name,avatar:p.avatar,...cosmet
 function publicRoom(r){const {secret,gameState,chatCooldown,chat,...data}=r;return {...data,createdAt:r.createdAt.toMillis(),updatedAt:r.updatedAt.toMillis(),expiresAt:r.expiresAt.toMillis()};}
 function passwordHash(password,salt){return scryptSync(password,salt,32).toString('hex');}
 function gate(state,kind,ms,now){state.presentation=kind;state.presentationUntil=now+ms;state.turnDueAt=now+ms;}
+function shuffleSeats(room){
+  const seats=[0,1,2,3];
+  for(let i=3;i>0;i--){const j=randomInt(i+1);[seats[i],seats[j]]=[seats[j],seats[i]];}
+  for(const player of room.players)player.index=seats[player.index];
+  room.botSeats=(room.botSeats||[]).map(index=>seats[index]).sort((a,b)=>a-b);
+}
+function readySeats(state,room){
+  return Array.from({length:4},(_,index)=>{
+    const player=room.players.find(p=>p.index===index);
+    return !player||player.status!=='connected'||(state.readyUids||[]).includes(player.uid);
+  });
+}
 function nextDeadline(state,room,now){
   const human=room.players.some(p=>p.index===state.current&&p.status==='connected');
   state.turn_seconds=human?25:state.phase==='swapping'?3:1.6;
@@ -40,9 +52,14 @@ function nextDeadline(state,room,now){
 function advance(state,room,now){
   if(!state)return false;
   if(state.presentation){if(now<state.presentationUntil)return false;state.presentation='';state.swap_preview={};state.revision++;nextDeadline(state,room,now);return true;}
-  if(now<state.turnDueAt||state.winner>=0)return false;
+  if(state.winner>=0)return false;
+  if(state.phase==='round_end'){
+    if(now<state.turnDueAt&&!readySeats(state,room).every(Boolean))return false;
+    delete state.readyUids;
+    engine.nextRound(state);state.swap_preview={};gate(state,'reveal',4500,now);return true;
+  }
+  if(now<state.turnDueAt)return false;
   if(state.phase==='collecting')engine.collect(state);
-  else if(state.phase==='round_end'){engine.nextRound(state);gate(state,'reveal',4500,now);return true;}
   else {const a=engine.ai(state,state.current),before=[...state.exposed],p=state.current;engine.act(state,p,a.action,a.value);if(a.action==='swap'){state.swap_preview={king:p,target:a.value,before};gate(state,'swap_result',3200,now);return true;}}
   nextDeadline(state,room,now);return true;
 }
@@ -50,6 +67,7 @@ function reply(room,state,uid,now){
   const p=room.players.find(p=>p.uid===uid);if(!p)fail('permission-denied','لست عضوًا في الغرفة');
   let view={};
   if(state){view=engine.view(state,p.index);view.presentation_remaining=Math.max(0,(state.presentationUntil-now)/1000);view.turn_remaining=Math.max(0,(state.turnDueAt-now)/1000);view.humans=Array.from({length:4},(_,i)=>room.players.some(p=>p.index===i&&p.status==='connected'));if(state.presentation){view.legal=[];view.available_bids=[];}}
+  if(state?.phase==='round_end'&&state.winner<0){view.ready_seats=readySeats(state,room);delete view.readyUids;}
   return {room:{...publicRoom(room),chat:room.chat||[]},view,serverTime:now};
 }
 function createService(db, clock=Date.now){
@@ -246,8 +264,8 @@ function createService(db, clock=Date.now){
       tx.update(ref(`rooms/${r._id}`),{chat:r.chat,chatCooldown:r.chatCooldown,revision:r.revision,updatedAt:r.updatedAt});
       return reply(r,state,uid,now);
     }
-    if(['poll','fillBots','start','move','nextRound','leave'].includes(op)){
-      keys(d,op==='move'?['roomId','action','value','expectedRevision']:op==='poll'?['roomId','latencyMs']:['roomId']);
+    if(['poll','fillBots','start','move','nextRound','readyRound','leave'].includes(op)){
+      keys(d,op==='move'?['roomId','action','value','expectedRevision']:op==='poll'?['roomId','latencyMs']:op==='readyRound'?['roomId','round']:['roomId']);
       if(d.latencyMs!==undefined&&(!Number.isInteger(d.latencyMs)||d.latencyMs<0||d.latencyMs>60000))fail('invalid-argument','قياس اتصال غير صالح');
       const entry=await roomData(tx,d.roomId,op==='poll'||op==='leave');
       if(!entry){
@@ -286,13 +304,18 @@ function createService(db, clock=Date.now){
       }else if(op==='start'){
         if(uid!==r.hostId)fail('permission-denied','المضيف فقط يبدأ المباراة');if(r.status!=='waiting')fail('failed-precondition','بدأت المباراة بالفعل');
         if([0,1,2,3].some(i=>!r.players.some(p=>p.index===i)&&!(r.botSeats||[]).includes(i)))fail('failed-precondition','انتظر اكتمال اللاعبين أو استكمل المقاعد ببوتات أولًا');
+        shuffleSeats(r);
         const names=Array.from({length:4},(_,i)=>r.players.find(p=>p.index===i)?.name||['سالم','عمر','خالد','علي'][i]);state=engine.start(names,r.target,r.difficulty);state.swap_preview={};gate(state,'reveal',4500,now);r.status='playing';changed=true;
       }else if(op==='move'){
         if(!state||r.status!=='playing'||state.presentation||!Number.isInteger(d.expectedRevision)||d.expectedRevision!==state.revision||now>=state.turnDueAt)fail('failed-precondition','تغيّر الدور؛ انتظر تحديث الطاولة');
         const p=r.players.find(p=>p.uid===uid).index,before=[...state.exposed];if(!engine.act(state,p,d.action,d.value))fail('invalid-argument','هذه الحركة غير مسموحة في دورك');
         if(d.action==='swap'){state.swap_preview={king:p,target:d.value,before};gate(state,'swap_result',3200,now);}else nextDeadline(state,r,now);changed=true;
-      }else if(op==='nextRound'){
-        if(!state||state.phase!=='round_end'||state.winner>=0||uid!==r.hostId)fail('failed-precondition','لا يمكن بدء الجولة الآن');engine.nextRound(state);gate(state,'reveal',4500,now);state.swap_preview={};changed=true;
+      }else if(op==='readyRound'||op==='nextRound'){
+        if(!state||r.status!=='playing'||state.winner>=0)fail('failed-precondition','انتهت المباراة');
+        if(state.phase!=='round_end'||(op==='readyRound'&&d.round!==state.round))return reply(r,state,uid,now);
+        state.readyUids??=[];
+        if(!state.readyUids.includes(uid)){state.readyUids.push(uid);state.revision++;changed=true;}
+        changed=advance(state,r,now)||changed;
       }else changed=advance(state,r,now)||changed;
       if(changed&&readOnly)return null;
       if(changed)await saveRoom(tx,r,secret,state,now);return reply(r,state,uid,now);

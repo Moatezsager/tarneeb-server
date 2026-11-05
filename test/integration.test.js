@@ -134,8 +134,37 @@ test('deployed-rule candidate denies direct mutations, private state and legacy 
   const joined=await call('bot-guest','joinRoom',{code:room.code,password:''});
   assert.deepEqual(joined.room.botSeats,[2,3]);assert.equal(joined.room.players.length,2);
   await reject(call('bot-guest','fillBots',{roomId}),'permission-denied');
-  const started=await call('bot-host','start',{roomId});assert.equal(started.room.status,'playing');assert.deepEqual(started.view.humans,[true,true,false,false]);
+  const started=await call('bot-host','start',{roomId});assert.equal(started.room.status,'playing');
+  const humanSeats=started.room.players.map(p=>p.index);
+  assert.deepEqual([...humanSeats,...started.room.botSeats].sort(),[0,1,2,3]);
+  assert.deepEqual(started.view.humans,[0,1,2,3].map(i=>humanSeats.includes(i)));
+  assert.equal(started.view.names[started.view.seat],'bot-host');
   await reject(call('bot-host','fillBots',{roomId}),'failed-precondition');
+  const secret=db.doc(`roomSecrets/${roomId}`);
+  async function endRound(){
+    const state=JSON.parse((await secret.get()).data().state);
+    Object.assign(state,{phase:'round_end',presentation:'',turnDueAt:now+15000});
+    state.revision++;
+    await secret.update({state:JSON.stringify(state)});
+    return state.round;
+  }
+  const round=await endRound();
+  const guest=await call('bot-guest','readyRound',{roomId,round});
+  assert.equal(guest.view.phase,'round_end');
+  assert.equal(guest.view.ready_seats[guest.view.seat],true);
+  assert.equal(guest.view.ready_seats[started.view.seat],false);
+  assert.equal(guest.view.ready_seats.filter(Boolean).length,3);
+  assert(!('readyUids' in guest.view));
+  const duplicate=await call('bot-guest','readyRound',{roomId,round});
+  assert.equal(duplicate.view.revision,guest.view.revision);
+  const next=await call('bot-host','readyRound',{roomId,round});
+  assert.equal(next.view.round,round+1);assert.equal(next.view.presentation,'reveal');
+  assert.deepEqual(next.room.players.map(p=>p.index),humanSeats);
+  const second=await endRound();
+  const stale=await call('bot-guest','readyRound',{roomId,round});
+  assert.equal(stale.view.ready_seats.filter(Boolean).length,2);
+  now+=14999;assert.equal((await call('bot-host','poll',{roomId})).view.round,second);
+  now++;assert.equal((await call('bot-guest','poll',{roomId})).view.round,second+1);
  });
 
 test('profile visibility, last seen and cancelling requests preserve relationship state',{skip:!enabled},async()=>{
@@ -297,13 +326,16 @@ test('gold rewards are awarded once at completed match and excluded from solo bo
   for(const host of ['goldHost','goldSolo']){
     const created=await call(host,'createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''});const roomId=created.room._id;
     if(host==='goldHost')await call('goldGuest','joinRoom',{code:created.room.code,password:''});
-    await call(host,'fillBots',{roomId});await call(host,'start',{roomId});
+    await call(host,'fillBots',{roomId});const started=await call(host,'start',{roomId});
+    const seat=started.view.seat;
     const secretRef=db.doc(`roomSecrets/${roomId}`),secret=(await secretRef.get()).data(),state=JSON.parse(secret.state);
     Object.assign(state,{round:2,phase:'collecting',presentation:'',bids:[11,0,2,3],
-      taken:[10,0,0,0],tricks:10,lead:0,trick:[25,13,14,15]});
+      taken:[0,0,0,0],tricks:10,lead:seat,trick:[13,14,15,16]});
+    [state.bids[0],state.bids[seat]]=[state.bids[seat],state.bids[0]];
+    state.taken[seat]=10;state.trick[seat]=25;
     await secretRef.update({state:JSON.stringify(state)});now+=16000;
     const outcomes=await Promise.all([call(host,'poll',{roomId}),call(host,'poll',{roomId})]);
-    assert(outcomes.every(outcome=>outcome.view.winner===0&&outcome.room.status==='finished'));
+    assert(outcomes.every(outcome=>outcome.view.winner===seat&&outcome.room.status==='finished'));
     assert(outcomes.every(outcome=>outcome.view.tricks===11));
     for(const collection of ['rooms','roomSecrets'])assert(!(await db.doc(`${collection}/${roomId}`).get()).exists);
     assert(!(await db.doc(`activeRooms/${host}`).get()).exists);
@@ -311,7 +343,7 @@ test('gold rewards are awarded once at completed match and excluded from solo bo
     await reject(call('outsider','poll',{roomId}),'not-found');
     if(host==='goldHost'){
       assert(!(await db.doc('activeRooms/goldGuest').get()).exists);
-      assert.equal((await call('goldGuest','poll',{roomId})).view.seat,1);
+      assert.equal((await call('goldGuest','poll',{roomId})).view.seat,started.room.players.find(p=>p.uid==='goldGuest').index);
     }
     assert.equal((await call(host,'store')).gold,host==='goldHost'?20:0);
   }
