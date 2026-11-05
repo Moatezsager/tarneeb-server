@@ -4,6 +4,7 @@ const {Timestamp,FieldValue} = require('firebase-admin/firestore');
 const {AppError:HttpsError} = require('./errors');
 const engine = require('./engine');
 const {completeProfile,validateProfileEdit}=require('./profile');
+const {removeMember,removeRoom}=require('./room-lifecycle');
 const VERSION=2, HOUR=3600000;
 const CATALOG=[
   {id:'emerald',kind:'frame',name:'إطار الزمرد',price:100},
@@ -55,14 +56,22 @@ function createService(db, clock=Date.now){
   // shortcut: single-instance memory limits reset on restart; share counters before scaling out.
   const rateLimits=new Map();
   const ref=p=>db.doc(p);
-  const profile=async(tx,uid)=>{const s=await tx.get(ref(`users/${uid}`));if(!s.exists)fail('failed-precondition','أكمل ملفك الشخصي أولًا');const p=s.data();if(p.uid!==uid)fail('failed-precondition','أعد مزامنة ملفك الشخصي');return p;};
-  async function roomData(tx,roomId){if(!id(roomId))fail('invalid-argument','رمز غرفة غير صالح');const [r,s]=await tx.getAll(ref(`rooms/${roomId}`),ref(`roomSecrets/${roomId}`));if(!r.exists||r.data().protocolVersion!==VERSION||!s.exists)fail('not-found','الغرفة غير موجودة أو تحتاج إصدارًا أحدث');if(r.data().expiresAt.toMillis()<=clock())fail('not-found','انتهت صلاحية الغرفة');return [r.data(),s.data(),s.data().state?JSON.parse(s.data().state):null];}
-  function saveRoom(tx,r,secret,state,now){
+  const profile=async(tx,uid)=>{const s=await tx.get(ref(`users/${uid}`));if(!s.exists)fail('failed-precondition','أكمل ملفك الشخصي أولًا');const p=s.data();if(p.deleting)fail('permission-denied','الحساب قيد الحذف');if(p.uid!==uid)fail('failed-precondition','أعد مزامنة ملفك الشخصي');return p;};
+  async function roomData(tx,roomId,allowMissing=false){if(!id(roomId))fail('invalid-argument','رمز غرفة غير صالح');const [r,s]=await tx.getAll(ref(`rooms/${roomId}`),ref(`roomSecrets/${roomId}`));if(!r.exists&&allowMissing)return null;if(!r.exists||r.data().protocolVersion!==VERSION||!s.exists)fail('not-found','الغرفة غير موجودة أو تحتاج إصدارًا أحدث');if(r.data().expiresAt.toMillis()<=clock())fail('not-found','انتهت صلاحية الغرفة');return [r.data(),s.data(),s.data().state?JSON.parse(s.data().state):null];}
+  async function saveRoom(tx,r,secret,state,now){
     r.updatedAt=stamp(now);r.expiresAt=stamp(now+(r.status==='finished'?HOUR:6*HOUR));r.revision=(r.revision||0)+1;
     if(state?.winner>=0&&r.status!=='finished'){
-      r.status='finished';r.expiresAt=stamp(now+HOUR);
+      r.status='finished';r.expiresAt=stamp(now+5*60000);
+      const result=reply(r,state,r.players[0].uid,now);
+      result.room.chat=[];
+      result.view.hand=[];
+      result.view.legal=[];
+      result.view.available_bids=[];
+      await removeRoom(tx,db,r._id,r.memberUids);
+      tx.set(ref(`roomResults/${r._id}`),{memberUids:r.memberUids,room:result.room,view:result.view,expiresAt:r.expiresAt});
       // Award once in the same transaction as the terminal state; legacy profile points are not trusted.
       for(const p of r.players){const won=state.mode==='Teams'?p.index%2===state.winner:p.index===state.winner;tx.set(ref(`rankedStats/${p.uid}`),{games:FieldValue.increment(1),wins:FieldValue.increment(won?1:0),points:FieldValue.increment(won?10:2),updatedAt:stamp(now)},{merge:true});if(r.players.length>=2&&p.status==='connected')tx.set(ref(`wallets/${p.uid}`),{gold:FieldValue.increment(won?20:5),updatedAt:stamp(now)},{merge:true});}
+      return;
     }
     tx.set(ref(`rooms/${r._id}`),r);tx.set(ref(`roomSecrets/${r._id}`),{...secret,state:state?JSON.stringify(state):'',expiresAt:r.expiresAt});
   }
@@ -139,7 +148,7 @@ function createService(db, clock=Date.now){
       keys(d,['searchId']);const searchId=str(d.searchId,3,32).toUpperCase();if(!/^[A-Z0-9-]+$/.test(searchId))fail('invalid-argument','معرّف غير صالح');
       const reservation=await tx.get(ref(`searchIds/${searchId}`));let userId=reservation.data()?.uid;
       if(!userId){const found=await tx.get(db.collection('users').where('searchId','==',searchId).limit(2));if(found.size!==1)return {profile:null};userId=found.docs[0].id;}
-      if(userId===uid)return {profile:null};const p=await tx.get(ref(`users/${userId}`));return {profile:p.exists?{...safeProfile(p.data()),uid:userId}:null};
+      if(userId===uid)return {profile:null};const p=await tx.get(ref(`users/${userId}`));return {profile:p.exists&&!p.data().deleting?{...safeProfile(p.data()),uid:userId}:null};
     }
     if(op==='friends'||op==='requests'||op==='invites'){
       keys(d,['cursor']);const collection=op==='friends'?db.collection(`users/${uid}/friends`):db.collection(op==='requests'?'friendRequests':'roomInvites');
@@ -191,10 +200,11 @@ function createService(db, clock=Date.now){
       keys(d,['mode','target','difficulty','isPublic','password']);if(!['Teams','FFA'].includes(d.mode)||![31,61,101].includes(d.target)||![0,1,2].includes(d.difficulty)||typeof d.isPublic!=='boolean')fail('invalid-argument','إعدادات غرفة غير صالحة');const password=str(d.password??'',0,64);
       const me=await profile(tx,uid),active=await tx.get(ref(`activeRooms/${uid}`));if(!completeProfile(me))fail('failed-precondition','أكمل ملف اللاعب أولًا');if(active.exists){const old=await tx.get(ref(`rooms/${active.data().roomId}`));if(old.exists&&old.data().memberUids.includes(uid)&&old.data().expiresAt.toMillis()>now)fail('failed-precondition','غادر غرفتك الحالية أولًا');}
       const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',bytes=randomBytes(6),code=Array.from(bytes,x=>alphabet[x%alphabet.length]).join(''),roomId=`v2_${code}`;
-      const exists=await tx.get(ref(`rooms/${roomId}`));if(exists.exists)fail('aborted','أعد إنشاء الغرفة');
+      const collision=await tx.getAll(ref(`rooms/${roomId}`),ref(`roomResults/${roomId}`));
+      if(collision.some(doc=>doc.exists))fail('aborted','أعد إنشاء الغرفة');
       const r={_id:roomId,protocolVersion:VERSION,code,hostId:uid,hostName:me.name,status:'waiting',isPublic:d.isPublic,locked:!!password,mode:d.mode,target:d.target,difficulty:d.difficulty,players:[player(me,0)],botSeats:[],memberUids:[uid],revision:0,createdAt:stamp(now),updatedAt:stamp(now),expiresAt:stamp(now+6*HOUR)};
       const salt=randomBytes(16).toString('hex'),secret={salt,passwordHash:password?passwordHash(password,salt):'',presence:{[uid]:now}};
-      saveRoom(tx,r,secret,null,now);tx.set(ref(`activeRooms/${uid}`),{roomId});return reply(r,null,uid,now);
+      await saveRoom(tx,r,secret,null,now);tx.set(ref(`activeRooms/${uid}`),{roomId});return reply(r,null,uid,now);
     }
     if(op==='invite'){
       keys(d,['roomId','toUid']);if(!id(d.toUid)||d.toUid===uid)fail('invalid-argument','مستلم غير صالح');const [r]=await roomData(tx,d.roomId),me=await profile(tx,uid);await profile(tx,d.toUid);
@@ -209,6 +219,7 @@ function createService(db, clock=Date.now){
         if(!d.accept){tx.update(i.ref,{status:'rejected'});return {status:'rejected'};}roomId=invitation.roomId;
       }else {const code=str(d.code,6,6).toUpperCase();if(!/^[A-Z2-9]{6}$/.test(code))fail('invalid-argument','رمز غير صالح');roomId=`v2_${code}`;}
       const [r,secret,state]=await roomData(tx,roomId),me=await profile(tx,uid),active=await tx.get(ref(`activeRooms/${uid}`));
+      if(r.status==='finished'||state?.winner>=0)fail('failed-precondition','انتهت المباراة');
       if(active.exists&&active.data().roomId!==roomId){const old=await tx.get(ref(`rooms/${active.data().roomId}`));if(old.exists&&old.data().memberUids.includes(uid)&&old.data().expiresAt.toMillis()>now)fail('failed-precondition','غادر غرفتك الحالية أولًا');}
       if(invitation&&!r.memberUids.includes(invitation.fromUid))fail('failed-precondition','غادر صاحب الدعوة الغرفة');
       if(!r.memberUids.includes(uid)){
@@ -217,7 +228,7 @@ function createService(db, clock=Date.now){
         if(!invitation&&secret.passwordHash){const password=str(d.password??'',0,64),attempt=passwordHash(password,secret.salt);if(!timingSafeEqual(Buffer.from(attempt,'hex'),Buffer.from(secret.passwordHash,'hex')))fail('permission-denied','رمز الغرفة أو كلمة المرور غير صحيحة');}
         const seat=[0,1,2,3].find(i=>!r.players.some(p=>p.index===i));r.players.push(player(me,seat));r.botSeats=(r.botSeats||[]).filter(i=>i!==seat);r.memberUids.push(uid);
       }
-      secret.presence[uid]=now;saveRoom(tx,r,secret,state,now);tx.set(ref(`activeRooms/${uid}`),{roomId});if(invitation)tx.update(ref(`roomInvites/${d.inviteId}`),{status:'accepted'});return reply(r,state,uid,now);
+      secret.presence[uid]=now;await saveRoom(tx,r,secret,state,now);tx.set(ref(`activeRooms/${uid}`),{roomId});if(invitation)tx.update(ref(`roomInvites/${d.inviteId}`),{status:'accepted'});return reply(r,state,uid,now);
     }
     if(op==='chat'){
       keys(d,['roomId','text']);const text=str(d.text,1,160);
@@ -238,13 +249,27 @@ function createService(db, clock=Date.now){
     if(['poll','fillBots','start','move','nextRound','leave'].includes(op)){
       keys(d,op==='move'?['roomId','action','value','expectedRevision']:op==='poll'?['roomId','latencyMs']:['roomId']);
       if(d.latencyMs!==undefined&&(!Number.isInteger(d.latencyMs)||d.latencyMs<0||d.latencyMs>60000))fail('invalid-argument','قياس اتصال غير صالح');
-      const [r,secret,state0]=await roomData(tx,d.roomId);if(!r.memberUids.includes(uid))fail('permission-denied','لم تعد عضوًا في الغرفة');let state=state0;
-      if(op==='leave'){
-        const active=await tx.get(ref(`activeRooms/${uid}`));r.players=r.players.filter(p=>p.uid!==uid);r.memberUids=r.memberUids.filter(x=>x!==uid);delete secret.presence[uid];
-        if(r.hostId===uid){r.hostId=r.players[0]?.uid||'';r.hostName=r.players[0]?.name||'';}
-        if(r.players.length===0){r.status='finished';secret.state='';state=null;}saveRoom(tx,r,secret,state,now);if(active.data()?.roomId===d.roomId)tx.delete(active.ref);return {status:'left'};
+      const entry=await roomData(tx,d.roomId,op==='poll'||op==='leave');
+      if(!entry){
+        if(op==='leave')return {status:'left'};
+        const result=(await tx.get(ref(`roomResults/${d.roomId}`))).data();
+        const player=result?.room?.players?.find(player=>player.uid===uid);
+        if(!player||!result.expiresAt||result.expiresAt.toMillis()<=now)fail('not-found','الغرفة غير موجودة');
+        return {room:result.room,view:{...result.view,seat:player.index},serverTime:now};
       }
-      let changed=false;
+      const [r,secret,state0]=entry;if(!r.memberUids.includes(uid))fail('permission-denied','لم تعد عضوًا في الغرفة');let state=state0;
+      if(op==='leave'){
+        removeMember(r,secret,uid);
+        if(r.players.length===0)await removeRoom(tx,db,d.roomId,[uid]);
+        else {
+          const active=await tx.get(ref(`activeRooms/${uid}`));
+          await saveRoom(tx,r,secret,state,now);
+          if(active.data()?.roomId===d.roomId)tx.delete(active.ref);
+        }
+        return {status:'left'};
+      }
+      if(op==='poll'&&r.status==='finished')return reply(r,state,uid,now);
+      let changed=state?.winner>=0;
       if(now-(secret.presence[uid]||0)>15000){secret.presence[uid]=now;if(op==='poll'&&d.latencyMs>0){const self=r.players.find(p=>p.uid===uid);self.latencyMs=d.latencyMs;self.latencyAt=now;}changed=true;}
       for(const p of r.players){const status=now-(secret.presence[p.uid]||0)>45000?'disconnected':'connected';if(p.status!==status){p.status=status;changed=true;}}
       if(r.status==='waiting'){
@@ -270,7 +295,7 @@ function createService(db, clock=Date.now){
         if(!state||state.phase!=='round_end'||state.winner>=0||uid!==r.hostId)fail('failed-precondition','لا يمكن بدء الجولة الآن');engine.nextRound(state);gate(state,'reveal',4500,now);state.swap_preview={};changed=true;
       }else changed=advance(state,r,now)||changed;
       if(changed&&readOnly)return null;
-      if(changed)saveRoom(tx,r,secret,state,now);return reply(r,state,uid,now);
+      if(changed)await saveRoom(tx,r,secret,state,now);return reply(r,state,uid,now);
     }
     fail('invalid-argument','عملية غير معروفة');
   }
@@ -294,7 +319,11 @@ function createService(db, clock=Date.now){
     return db.runTransaction(async tx=>{
       const receipt=mutation?ref(`operations/${hash(`${uid}:${input.requestId}`)}`):null;
       const fingerprint=hash(JSON.stringify({op,d}));
-      if(receipt){const previous=await tx.get(receipt);if(previous.exists){if(previous.data().fingerprint!==fingerprint)fail('invalid-argument','معرّف عملية مستخدم');return JSON.parse(previous.data().result);}}
+      if(receipt){
+        const [previous,deletion]=await tx.getAll(receipt,ref(`accountDeletions/${uid}`));
+        if(deletion.exists)fail('permission-denied','الحساب قيد الحذف');
+        if(previous.exists){if(previous.data().fingerprint!==fingerprint)fail('invalid-argument','معرّف عملية مستخدم');return JSON.parse(previous.data().result);}
+      }
       const result=await operate(tx,uid,op,d,clock());
       if(receipt)tx.create(receipt,{uid,fingerprint,result:JSON.stringify(result),expiresAt:stamp(now+24*HOUR)});
       return result;
@@ -305,7 +334,9 @@ async function removeExpired(db,ref,cutoff){
   return db.runTransaction(async tx=>{
     const current=await tx.get(ref),expiry=current.data()?.expiresAt;
     if(!expiry||expiry.toMillis()>cutoff.toMillis())return false;
-    tx.delete(ref);return true;
+    if(ref.parent.id==='rooms')await removeRoom(tx,db,ref.id,current.data().memberUids||[]);
+    else tx.delete(ref);
+    return true;
   });
 }
 module.exports={createService,VERSION,advance,reply,removeExpired};

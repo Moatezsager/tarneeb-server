@@ -10,7 +10,7 @@ async function body(req){
   for await(const chunk of req){size+=chunk.length;if(size>8192)throw new AppError('invalid-argument','الطلب أكبر من المسموح');chunks.push(chunk);}
   try{const value=JSON.parse(Buffer.concat(chunks).toString('utf8'));if(!value||typeof value!=='object'||Array.isArray(value))throw Error();return value;}catch{throw new AppError('invalid-argument','JSON غير صالح');}
 }
-function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,projectId,production=true,webOrigins=[]}){
+function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,projectId,production=true,webOrigins=[],maintenance}){
   const authDomain=projectId?`${projectId}.firebaseapp.com`:'';
   const start=Date.now(),metrics={requests:0,errors:0,inFlight:0};let window=0,attempts=0;
   const files=new Map([['/admin',['index.html','text/html']],['/admin/app.js',['app.js','text/javascript']],['/admin/style.css',['style.css','text/css']]].map(([url,[file,type]])=>[url,{content:readFileSync(path.join(__dirname,'public',file)),type}]));
@@ -27,7 +27,12 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,project
     if(production)res.setHeader('Strict-Transport-Security','max-age=31536000');
     let route;try{route=new URL(req.url,'http://localhost');}catch{json(res,400,{error:{status:'INVALID_ARGUMENT',message:'طلب غير صالح'}});return;}
     // Cron/Render health checks never authenticate, read Firestore, or keep a room alive.
-    if(req.method==='GET'&&route.pathname==='/health'){json(res,200,{status:'ok',protocolVersion:2,buildId:process.env.RENDER_GIT_COMMIT||''});return;}
+    if(req.method==='GET'&&route.pathname==='/health'){
+      const state=maintenance?.snapshot();
+      const cleanup=state&&{lastRun:state.lastRun,state:state.running?'running':state.errors?'degraded':state.lastRun?'ok':'starting'};
+      json(res,200,{status:'ok',protocolVersion:2,buildId:process.env.RENDER_GIT_COMMIT||'',cleanup});
+      return;
+    }
     if(route.pathname==='/online'&&req.headers.origin){
       if(!webOrigins.includes(req.headers.origin)){json(res,403,{error:{status:'PERMISSION_DENIED',message:'نطاق اللعبة غير مسموح'}});return;}
       res.setHeader('Access-Control-Allow-Origin',req.headers.origin);res.setHeader('Vary','Origin');
@@ -62,9 +67,9 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,project
       }
       if(route.pathname.startsWith('/admin/api/')){
         const claims=await adminSession(req),action=route.pathname.slice(11);
-        if(req.method==='GET'&&action==='status'){json(res,200,{result:{uptimeSeconds:Math.floor((Date.now()-start)/1000),memoryMB:Math.round(process.memoryUsage().rss/1048576),...metrics}});return;}
+        if(req.method==='GET'&&action==='status'){json(res,200,{result:{uid:claims.uid,uptimeSeconds:Math.floor((Date.now()-start)/1000),memoryMB:Math.round(process.memoryUsage().rss/1048576),...metrics,cleanup:maintenance?.snapshot()}});return;}
         if(req.method==='GET'&&['users','rooms','audit'].includes(action)){json(res,200,{result:await admin(claims.uid,action,{cursor:route.searchParams.get('cursor')||''})});return;}
-        if(req.method==='POST'&&['userStatus','closeRoom'].includes(action)){json(res,200,{result:await admin(claims.uid,action,await body(req))});return;}
+        if(req.method==='POST'&&['userStatus','closeRoom','creditGold','deleteUser','cleanup'].includes(action)){json(res,200,{result:await admin(claims.uid,action,await body(req))});return;}
         throw new AppError('not-found','مسار غير موجود');
       }
       if(req.method==='POST'&&route.pathname==='/online'){

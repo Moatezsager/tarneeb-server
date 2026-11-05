@@ -3,10 +3,14 @@ const assert=require('node:assert/strict');
 const {randomBytes}=require('node:crypto');
 const {initializeApp,deleteApp}=require('firebase-admin/app');
 const {getFirestore,Timestamp}=require('firebase-admin/firestore');
+const {getAuth}=require('firebase-admin/auth');
 const {createService,removeExpired}=require('../service');
 const engine=require('../engine');
 const {createAdmin}=require('../admin');
+const {processDeletion}=require('../account-deletion');
+const {createMaintenance}=require('../maintenance');
 const enabled=process.env.FIRESTORE_EMULATOR_HOST==='127.0.0.1:18881';
+const authEnabled=enabled&&process.env.FIREBASE_AUTH_EMULATOR_HOST==='127.0.0.1:18882';
 let app,db,api,now=Date.now();
 const rid=()=>randomBytes(16).toString('hex');
 const call=(uid,op,payload={},requestId=rid())=>api(uid,{op,payload,requestId,protocolVersion:2});
@@ -91,11 +95,10 @@ test('administrator closes rooms atomically and records account suspension',{ski
   const created=await call('admin-room-player','createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''});
   const roomId=created.room._id;
   await admin('owner','closeRoom',{roomId});
-  const room=(await db.doc(`rooms/${roomId}`).get()).data();
-  assert.equal(room.status,'finished');assert.deepEqual(room.memberUids,[]);
-  assert.equal((await db.doc(`roomSecrets/${roomId}`).get()).data().state,'');
+  assert(!(await db.doc(`rooms/${roomId}`).get()).exists);
+  assert(!(await db.doc(`roomSecrets/${roomId}`).get()).exists);
   assert(!(await db.doc('activeRooms/admin-room-player').get()).exists);
-  await reject(call('admin-room-player','poll',{roomId}),'permission-denied');
+  await reject(call('admin-room-player','poll',{roomId}),'not-found');
   await admin('owner','userStatus',{uid:'admin-room-player',disabled:true});
   assert.deepEqual(changes,[['admin-room-player',true],['admin-room-player','revoked']]);
   const log=await db.collection('adminAudit').get();assert.equal(log.size,2);assert(log.docs.every(d=>d.data().state==='completed'));
@@ -295,9 +298,109 @@ test('gold rewards are awarded once at completed match and excluded from solo bo
     await call(host,'fillBots',{roomId});await call(host,'start',{roomId});
     const secretRef=db.doc(`roomSecrets/${roomId}`),secret=(await secretRef.get()).data(),state=JSON.parse(secret.state);
     state.winner=0;state.presentation='';await secretRef.update({state:JSON.stringify(state)});now+=16000;
-    await Promise.all([call(host,'poll',{roomId}),call(host,'poll',{roomId})]);
-    await call(host,'poll',{roomId});
+    const outcomes=await Promise.all([call(host,'poll',{roomId}),call(host,'poll',{roomId})]);
+    assert(outcomes.every(outcome=>outcome.view.winner===0&&outcome.room.status==='finished'));
+    for(const collection of ['rooms','roomSecrets'])assert(!(await db.doc(`${collection}/${roomId}`).get()).exists);
+    assert(!(await db.doc(`activeRooms/${host}`).get()).exists);
+    assert.deepEqual((await call(host,'poll',{roomId})).view.hand,[]);
+    await reject(call('outsider','poll',{roomId}),'not-found');
+    if(host==='goldHost'){
+      assert(!(await db.doc('activeRooms/goldGuest').get()).exists);
+      assert.equal((await call('goldGuest','poll',{roomId})).view.seat,1);
+    }
     assert.equal((await call(host,'store')).gold,host==='goldHost'?20:0);
   }
   assert.equal((await call('goldGuest','store')).gold,5);
+});
+
+test('leaving the last seat removes the room, its secret and invitations immediately',{skip:!enabled},async()=>{
+  const uid='empty-room-host';
+  await call(uid,'profile',{name:'Empty room',age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
+  const {room}=await call(uid,'createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''});
+  const invite=db.doc('roomInvites/empty-room-fixture');
+  await invite.set({roomId:room._id});
+  const payload={roomId:room._id};
+  const leaveId=rid();
+  assert.deepEqual(await call(uid,'leave',payload,leaveId),{status:'left'});
+  assert.deepEqual(await call(uid,'leave',payload,leaveId),{status:'left'});
+  for(const ref of [db.doc(`rooms/${room._id}`),db.doc(`roomSecrets/${room._id}`),db.doc(`activeRooms/${uid}`),invite]){
+    assert(!(await ref.get()).exists,ref.path);
+  }
+});
+
+test('administrator gold credits are displayed, auditable and idempotent under retries',{skip:!enabled},async()=>{
+  const uid='gold-credit-player';
+  await call(uid,'profile',{name:'Gold player',age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
+  await db.doc(`wallets/${uid}`).update({gold:7});
+  const admin=createAdmin(db,{listUsers:async()=>({users:[{uid,metadata:{},disabled:false}]})},new Set(['owner']));
+  const payload={uid,amount:40,requestId:rid()};
+  await reject(admin('outsider','creditGold',payload),'permission-denied');
+  await reject(admin('owner','creditGold',{...payload,amount:-1}),'invalid-argument');
+  assert.deepEqual(await Promise.all([admin('owner','creditGold',payload),admin('owner','creditGold',payload)]),[{gold:47},{gold:47}]);
+  await reject(admin('owner','creditGold',{...payload,amount:41}),'invalid-argument');
+  assert.equal((await call(uid,'store')).gold,47);
+  assert.equal((await admin('owner','users',{cursor:''})).items[0].gold,47);
+  const audit=await db.collection('adminAudit').where('target','==',uid).get();
+  assert.equal(audit.size,1);
+  assert.equal(audit.docs[0].data().before,7);
+  assert.equal(audit.docs[0].data().after,47);
+});
+
+test('permanent deletion resumes safely and removes the Auth account and linked Firestore data',{skip:!authEnabled},async()=>{
+  const uid='delete-target',peer='delete-peer',auth=getAuth(app);
+  await auth.createUser({uid,email:'fixture-delete@example.test'});
+  for(const player of [uid,peer])await call(player,'profile',{name:player,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
+  const profile=db.doc(`users/${uid}`);
+  const searchId=(await profile.get()).data().searchId;
+  const refs=[
+    profile,db.doc(`wallets/${uid}`),db.doc(`rankedStats/${uid}`),db.doc(`activeRooms/${uid}`),
+    db.doc(`searchIds/${searchId}`),profile.collection('archive').doc('private'),
+    profile.collection('friends').doc(peer),db.doc(`users/${peer}/friends/${uid}`),
+    db.doc('friendRequests/delete-link'),db.doc('roomInvites/delete-link'),db.doc('roomResults/delete-link'),
+  ];
+  await refs[2].set({points:3});
+  await refs[5].set({note:'fixture'});
+  await refs[6].set({uid:peer});
+  await refs[7].set({uid});
+  await refs[8].set({fromUid:uid,toUid:peer});
+  await refs[9].set({fromUid:peer,toUid:uid});
+  await refs[10].set({memberUids:[uid,peer]});
+  const {room}=await call(uid,'createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''});
+  await call(peer,'joinRoom',{code:room.code,password:''});
+  const admin=createAdmin(db,auth,new Set(['owner']));
+  await reject(admin('owner','deleteUser',{uid:'owner',confirm:'owner'}),'permission-denied');
+  await reject(admin('owner','deleteUser',{uid,confirm:peer}),'invalid-argument');
+  assert.deepEqual(await admin('owner','deleteUser',{uid,confirm:uid}),{state:'pending'});
+  await reject(call(uid,'profile',{initialize:true}),'permission-denied');
+  const job=db.doc(`accountDeletions/${uid}`);
+  const interrupted={collection(){throw Error('transient Firestore outage');}};
+  await assert.rejects(processDeletion(interrupted,auth,job),/transient Firestore outage/);
+  await assert.rejects(auth.getUser(uid),e=>e.code==='auth/user-not-found');
+  assert((await profile.get()).exists);
+  assert.equal((await job.get()).data().state,'pending');
+  assert.equal(await processDeletion(db,auth,job),true);
+  await assert.rejects(auth.getUser(uid),e=>e.code==='auth/user-not-found');
+  for(const ref of refs)assert(!(await ref.get()).exists,ref.path);
+  const remaining=(await call(peer,'poll',{roomId:room._id})).room;
+  assert.deepEqual(remaining.memberUids,[peer]);
+  assert.equal(remaining.hostId,peer);
+  assert.deepEqual(await admin('owner','deleteUser',{uid,confirm:uid}),{state:'completed'});
+});
+
+test('maintenance clears expired results, abandoned rooms and orphaned seat pointers',{skip:!enabled},async()=>{
+  const uid='maintenance-host';
+  await call(uid,'profile',{name:'Maintenance',age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
+  const {room}=await call(uid,'createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''});
+  const roomRef=db.doc(`rooms/${room._id}`);
+  await roomRef.update({updatedAt:Timestamp.fromMillis(Date.now()-200000)});
+  const result=db.doc('roomResults/expired-fixture'),pointer=db.doc('activeRooms/aaa-orphan');
+  await result.set({expiresAt:Timestamp.fromMillis(Date.now()-1000)});
+  await pointer.set({roomId:'v2_MISSING'});
+  const maintenance=createMaintenance(db,{});
+  const report=await maintenance.run();
+  assert.equal(report.errors,0);
+  assert(report.lastRun>0&&report.removed>=3);
+  for(const ref of [roomRef,db.doc(`roomSecrets/${room._id}`),db.doc(`activeRooms/${uid}`),result,pointer]){
+    assert(!(await ref.get()).exists,ref.path);
+  }
 });

@@ -10,7 +10,7 @@ npm ci
 node --env-file=.env server.js
 npm test
 # يتطلب Firebase CLI وJava:
-firebase emulators:exec --config firebase.test.json --project demo-tarneeb-secure --only firestore "npm test"
+firebase emulators:exec --config firebase.test.json --project demo-tarneeb-secure --only "firestore,auth" "npm test"
 ```
 
 لا يحتاج البناء أو الاختبار إلى Godot أو مشروع TypeScript. fixtures توافق Godot محفوظة داخل test/fixtures. npm test يتخطى اختبارات قاعدة البيانات خارج المحاكي؛ الأمر الأخير يشغلها جميعًا على بيانات مؤقتة، وليس الإنتاج.
@@ -21,7 +21,7 @@ firebase emulators:exec --config firebase.test.json --project demo-tarneeb-secur
 2. اضبط PUBLIC_ORIGIN على عنوان الخدمة HTTPS دون مسار مثل /online أو /admin. يقبل الخادم الشرطة النهائية والمسافات المحيطة ويزيلها تلقائيًا.
 3. اضبط FIREBASE_PROJECT_ID وFIRESTORE_DATABASE_ID وFIREBASE_WEB_API_KEY حسب مشروع Firebase. معرفات المشروع الحالي موجودة في .env.example.
 4. ضع Firebase Authentication UID الخاص بالمسؤول في ADMIN_UIDS؛ يمكن فصل عدة معرفات بفواصل. الاسم والبريد لا يمنحان صلاحيات الإدارة.
-5. أضف حساب خدمة مخصصًا كـ Render Secret File باسم firebase-service-account.json. GOOGLE_APPLICATION_CREDENTIALS مضبوط على /etc/secrets/firebase-service-account.json. امنحه صلاحيات Firestore وFirebase Authentication المطلوبة فقط، لا دور Owner. ملف Google Desktop OAuth ليس حساب خدمة ولا يصلح لهذا الغرض.
+5. أضف حساب خدمة مخصصًا كـ Render Secret File باسم firebase-service-account.json. GOOGLE_APPLICATION_CREDENTIALS مضبوط على /etc/secrets/firebase-service-account.json. يحتاج حساب الخدمة إلى قراءة بيانات Firestore وكتابتها وحذفها، وإلى صلاحيات إدارة المستخدمين في Firebase Authentication بما فيها `firebaseauth.users.delete`. [صلاحيات Firestore](https://docs.cloud.google.com/firestore/native/docs/security/iam) و[صلاحيات Firebase Authentication](https://docs.cloud.google.com/iam/docs/roles-permissions/firebaseauth).
 6. لا ترفع ملف حساب الخدمة أو .env إلى Git أو Godot. ضع الأسرار في إعدادات Render فقط.
 7. بعد اختبار الخادم انشر القواعد والفهارس من هذا المستودع:
 
@@ -39,9 +39,11 @@ firebase deploy --only firestore --project gen-lang-client-0141680917
 
 افتح /admin. استخدم زر Google أو حساب Firebase Email/Password؛ يجب أن يكون UID الحساب ضمن ADMIN_UIDS. فعّل مزود الدخول المطلوب في Firebase. تسجيل الدخول عبر Google لا يحتاج إعداد كلمة مرور للوحة.
 
-الجلسة Cookie لمدة 8 ساعات، HttpOnly وSecure وSameSite=Strict في الإنتاج. يتحقق الخادم من إلغاء الجلسات والحظر، ومن أصل عمليات الإدارة. تعرض اللوحة المستخدمين على صفحات وآخر 30 غرفة وآخر 30 سجل إدارة. تتيح حظر/إعادة تفعيل المستخدم وإغلاق الغرفة دون كشف الأوراق السرية. لا يمكن حظر حساب إداري من اللوحة.
+الجلسة Cookie لمدة 8 ساعات، HttpOnly وSecure وSameSite=Strict في الإنتاج. يتحقق الخادم من إلغاء الجلسات والحظر وأصل طلبات الإدارة. تعرض اللوحة أرصدة الذهب وحالة الحسابات والغرف وآخر دورة صيانة. تُسجّل إضافة الذهب بالرصيد قبل الإضافة وبعدها، ويمنع معرّف الإجراء احتساب المحاولة المعادة مرتين.
 
-تعطيل الحساب يسجل النية أولًا ثم يغير Auth ويلغي توكنات التجديد؛ سجل pending يحتاج مراجعة لأن Auth وFirestore ليسا معاملة واحدة. إغلاق الغرفة وتحرير ارتباطات اللاعبين معاملة ذرية.
+يتطلب حذف الحساب كتابة UID في نافذة التأكيد. يتابع الخادم الحذف من Authentication وFirestore عبر مهمة محفوظة تُعاد عند التعثر. يشمل الحذف الملف ومجموعاته الفرعية والرصيد والإحصاءات وحجز المعرف والعلاقات والدعوات والمقاعد المرتبطة. يحفظ سجل الإدارة معرّف الهدف وحالة الإجراء. حسابات المسؤولين محمية من الحظر والحذف.
+
+يحذف إغلاق الغرفة إداريًا أو خروج آخر لاعب وثيقة الغرفة وحالة اللعب والارتباطات مباشرة. عند الفوز يثبت الخادم المكافآت ويحذف الغرفة في المعاملة نفسها. يبقى ملخص النتيجة متاحًا لأعضائها خمس دقائق.
 
 ## cron-job.org وحدود المجانية
 
@@ -56,8 +58,8 @@ firebase deploy --only firestore --project gen-lang-client-0141680917
 - الخادم يتحكم بالأوراق والأدوار والنقاط ويتحقق من هوية اللاعب وحظره. معرف العملية يمنع تكرار تنفيذ المحاولة المعادة.
 - البيانات الدائمة في Firestore؛ لا يعتمد الخادم على قرص Render المؤقت. لا تسجل الطلبات أو التوكنات أو الأيدي في السجلات.
 - محدد الطلبات في ذاكرة نسخة خادم واحدة، ويعاد ضبطه عند إعادة التشغيل. يلزم محدد مشترك عند التوسع لعدة نسخ.
-- معالجة مهلة الدور تتم عند استطلاع الغرفة؛ إذا انقطع الجميع تستأنف عند العودة. لا يوجد مؤقت دائم لكل غرفة.
-- تنظيف المنتهي كل ساعة أثناء تشغيل الخادم، حتى 100 وثيقة لكل مجموعة في الدورة، دون خدمة TTL مدفوعة. سجلات الإدارة لا تحذف تلقائيًا؛ راقب نموها.
+- تعالج مهلة الدور عند استطلاع الغرفة. تدخل الغرف التي انقطع نشاطها ثلاث دقائق في دورة التنظيف التالية.
+- يبدأ التنظيف عند تشغيل الخادم ويتكرر كل دقيقتين وهو مستيقظ. تزيل الدورات السجلات المنتهية على دفعات محدودة وتستأنف مهام حذف الحسابات. تفحص دورة منفصلة مؤشرات الغرف اليتيمة كل 15 دقيقة. تبقى سجلات الإدارة محفوظة.
 - لا يوجد اختبار حمل إنتاجي أو ضمان ضد DDoS؛ حدود الطلبات دفاع أولي والمجانية لا تعني سعة غير محدودة.
 
 ### دخول الإدارة عبر Google
