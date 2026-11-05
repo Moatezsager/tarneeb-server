@@ -3,6 +3,7 @@ const http=require('node:http');
 const {readFileSync}=require('node:fs');
 const path=require('node:path');
 const {AppError}=require('./errors');
+const {VERSION}=require('./service');
 const statusCodes={'invalid-argument':400,'unauthenticated':401,'permission-denied':403,'not-found':404,'already-exists':409,'failed-precondition':409,'aborted':409,'resource-exhausted':429,'unavailable':503};
 async function body(req){
   if(!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||''))throw new AppError('invalid-argument','JSON مطلوب');
@@ -30,7 +31,7 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,project
     if(req.method==='GET'&&route.pathname==='/health'){
       const state=maintenance?.snapshot();
       const cleanup=state&&{lastRun:state.lastRun,state:state.running?'running':state.errors?'degraded':state.lastRun?'ok':'starting'};
-      json(res,200,{status:'ok',protocolVersion:2,buildId:process.env.RENDER_GIT_COMMIT||'',cleanup});
+      json(res,200,{status:'ok',protocolVersion:VERSION,buildId:process.env.RENDER_GIT_COMMIT||'',cleanup});
       return;
     }
     if(route.pathname==='/online'&&req.headers.origin){

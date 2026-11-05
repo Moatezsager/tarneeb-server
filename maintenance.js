@@ -53,7 +53,7 @@ function createMaintenance(db, auth) {
         await sweep(db.collection(name).where('expiresAt','<=',now), doc => removeExpired(db,doc.ref,now));
       }
       const cutoff = Timestamp.fromMillis(now.toMillis()-ABANDONED_MS);
-      const stale = db.collection('rooms').where('protocolVersion','==',VERSION)
+      const stale = db.collection('rooms').where('protocolVersion','in',[2,VERSION])
         .where('updatedAt','<=',cutoff).orderBy('updatedAt','desc');
       await sweep(stale, doc => db.runTransaction(async tx => {
         const room = (await tx.get(doc.ref)).data();

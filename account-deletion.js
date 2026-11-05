@@ -40,7 +40,7 @@ async function detachRooms(db, uid) {
         const room = current.data();
         if (!room?.memberUids.includes(uid)) return;
         const members = room.memberUids;
-        if (room.protocolVersion !== 2 || members.length === 1 || !secretDoc.exists || room.status === 'finished') {
+        if (![2,3].includes(room.protocolVersion) || members.length === 1 || !secretDoc.exists || room.status === 'finished') {
           await removeRoom(tx, db, doc.id, members);
           return;
         }

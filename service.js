@@ -5,7 +5,7 @@ const {AppError:HttpsError} = require('./errors');
 const engine = require('./engine');
 const {completeProfile,validateProfileEdit}=require('./profile');
 const {removeMember,removeRoom}=require('./room-lifecycle');
-const VERSION=2, HOUR=3600000;
+const VERSION=3, HOUR=3600000;
 const CATALOG=[
   {id:'emerald',kind:'frame',name:'إطار الزمرد',price:100},
   {id:'royal',kind:'frame',name:'الإطار الملكي',price:250},
@@ -70,7 +70,7 @@ function createService(db, clock=Date.now){
       await removeRoom(tx,db,r._id,r.memberUids);
       tx.set(ref(`roomResults/${r._id}`),{memberUids:r.memberUids,room:result.room,view:result.view,expiresAt:r.expiresAt});
       // Award once in the same transaction as the terminal state; legacy profile points are not trusted.
-      for(const p of r.players){const won=state.mode==='Teams'?p.index%2===state.winner:p.index===state.winner;tx.set(ref(`rankedStats/${p.uid}`),{games:FieldValue.increment(1),wins:FieldValue.increment(won?1:0),points:FieldValue.increment(won?10:2),updatedAt:stamp(now)},{merge:true});if(r.players.length>=2&&p.status==='connected')tx.set(ref(`wallets/${p.uid}`),{gold:FieldValue.increment(won?20:5),updatedAt:stamp(now)},{merge:true});}
+      for(const p of r.players){const won=p.index===state.winner;tx.set(ref(`rankedStats/${p.uid}`),{games:FieldValue.increment(1),wins:FieldValue.increment(won?1:0),points:FieldValue.increment(won?10:2),updatedAt:stamp(now)},{merge:true});if(r.players.length>=2&&p.status==='connected')tx.set(ref(`wallets/${p.uid}`),{gold:FieldValue.increment(won?20:5),updatedAt:stamp(now)},{merge:true});}
       return;
     }
     tx.set(ref(`rooms/${r._id}`),r);tx.set(ref(`roomSecrets/${r._id}`),{...secret,state:state?JSON.stringify(state):'',expiresAt:r.expiresAt});
@@ -194,12 +194,12 @@ function createService(db, clock=Date.now){
       keys(d,['cursor']);let q=db.collection('rooms').where('protocolVersion','==',VERSION).where('status','==','waiting').where('isPublic','==',true).orderBy('__name__');if(d.cursor){if(!id(d.cursor))fail('invalid-argument','صفحة غير صالحة');q=q.startAfter(d.cursor);}const rooms=await tx.get(q.limit(20));return {items:rooms.docs.filter(x=>x.data().expiresAt.toMillis()>now).map(x=>publicRoom(x.data())),cursor:rooms.size===20?rooms.docs.at(-1).id:''};
     }
     if(op==='activeRoom'){
-      keys(d,[]);const a=await tx.get(ref(`activeRooms/${uid}`));if(!a.exists)return {roomId:''};const r=await tx.get(ref(`rooms/${a.data().roomId}`));return {roomId:r.exists&&r.data().memberUids.includes(uid)&&r.data().expiresAt.toMillis()>now?r.id:''};
+      keys(d,[]);const a=await tx.get(ref(`activeRooms/${uid}`));if(!a.exists)return {roomId:''};const r=await tx.get(ref(`rooms/${a.data().roomId}`));return {roomId:r.exists&&r.data().protocolVersion===VERSION&&r.data().memberUids.includes(uid)&&r.data().expiresAt.toMillis()>now?r.id:''};
     }
     if(op==='createRoom'){
-      keys(d,['mode','target','difficulty','isPublic','password']);if(!['Teams','FFA'].includes(d.mode)||![31,61,101].includes(d.target)||![0,1,2].includes(d.difficulty)||typeof d.isPublic!=='boolean')fail('invalid-argument','إعدادات غرفة غير صالحة');const password=str(d.password??'',0,64);
-      const me=await profile(tx,uid),active=await tx.get(ref(`activeRooms/${uid}`));if(!completeProfile(me))fail('failed-precondition','أكمل ملف اللاعب أولًا');if(active.exists){const old=await tx.get(ref(`rooms/${active.data().roomId}`));if(old.exists&&old.data().memberUids.includes(uid)&&old.data().expiresAt.toMillis()>now)fail('failed-precondition','غادر غرفتك الحالية أولًا');}
-      const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',bytes=randomBytes(6),code=Array.from(bytes,x=>alphabet[x%alphabet.length]).join(''),roomId=`v2_${code}`;
+      keys(d,['mode','target','difficulty','isPublic','password']);if(d.mode!=='FFA'||![31,61,101].includes(d.target)||![0,1,2].includes(d.difficulty)||typeof d.isPublic!=='boolean')fail('invalid-argument','إعدادات غرفة غير صالحة');const password=str(d.password??'',0,64);
+      const me=await profile(tx,uid),active=await tx.get(ref(`activeRooms/${uid}`));if(!completeProfile(me))fail('failed-precondition','أكمل ملف اللاعب أولًا');if(active.exists){const old=await tx.get(ref(`rooms/${active.data().roomId}`));if(old.exists&&old.data().protocolVersion===VERSION&&old.data().memberUids.includes(uid)&&old.data().expiresAt.toMillis()>now)fail('failed-precondition','غادر غرفتك الحالية أولًا');}
+      const alphabet='ABCDEFGHJKLMNPQRSTUVWXYZ23456789',bytes=randomBytes(6),code=Array.from(bytes,x=>alphabet[x%alphabet.length]).join(''),roomId=`v${VERSION}_${code}`;
       const collision=await tx.getAll(ref(`rooms/${roomId}`),ref(`roomResults/${roomId}`));
       if(collision.some(doc=>doc.exists))fail('aborted','أعد إنشاء الغرفة');
       const r={_id:roomId,protocolVersion:VERSION,code,hostId:uid,hostName:me.name,status:'waiting',isPublic:d.isPublic,locked:!!password,mode:d.mode,target:d.target,difficulty:d.difficulty,players:[player(me,0)],botSeats:[],memberUids:[uid],revision:0,createdAt:stamp(now),updatedAt:stamp(now),expiresAt:stamp(now+6*HOUR)};
@@ -217,10 +217,10 @@ function createService(db, clock=Date.now){
       if(op==='answerInvite'){
         if(!id(d.inviteId)||typeof d.accept!=='boolean')fail('invalid-argument','دعوة غير صالحة');const i=await tx.get(ref(`roomInvites/${d.inviteId}`));invitation=i.data();if(!invitation||invitation.toUid!==uid||invitation.status!=='pending'||invitation.expiresAt.toMillis()<=now)fail('failed-precondition','الدعوة غير متاحة أو انتهت');
         if(!d.accept){tx.update(i.ref,{status:'rejected'});return {status:'rejected'};}roomId=invitation.roomId;
-      }else {const code=str(d.code,6,6).toUpperCase();if(!/^[A-Z2-9]{6}$/.test(code))fail('invalid-argument','رمز غير صالح');roomId=`v2_${code}`;}
+      }else {const code=str(d.code,6,6).toUpperCase();if(!/^[A-Z2-9]{6}$/.test(code))fail('invalid-argument','رمز غير صالح');roomId=`v${VERSION}_${code}`;}
       const [r,secret,state]=await roomData(tx,roomId),me=await profile(tx,uid),active=await tx.get(ref(`activeRooms/${uid}`));
       if(r.status==='finished'||state?.winner>=0)fail('failed-precondition','انتهت المباراة');
-      if(active.exists&&active.data().roomId!==roomId){const old=await tx.get(ref(`rooms/${active.data().roomId}`));if(old.exists&&old.data().memberUids.includes(uid)&&old.data().expiresAt.toMillis()>now)fail('failed-precondition','غادر غرفتك الحالية أولًا');}
+      if(active.exists&&active.data().roomId!==roomId){const old=await tx.get(ref(`rooms/${active.data().roomId}`));if(old.exists&&old.data().protocolVersion===VERSION&&old.data().memberUids.includes(uid)&&old.data().expiresAt.toMillis()>now)fail('failed-precondition','غادر غرفتك الحالية أولًا');}
       if(invitation&&!r.memberUids.includes(invitation.fromUid))fail('failed-precondition','غادر صاحب الدعوة الغرفة');
       if(!r.memberUids.includes(uid)){
         if(!completeProfile(me))fail('failed-precondition','أكمل ملف اللاعب أولًا');
@@ -286,7 +286,7 @@ function createService(db, clock=Date.now){
       }else if(op==='start'){
         if(uid!==r.hostId)fail('permission-denied','المضيف فقط يبدأ المباراة');if(r.status!=='waiting')fail('failed-precondition','بدأت المباراة بالفعل');
         if([0,1,2,3].some(i=>!r.players.some(p=>p.index===i)&&!(r.botSeats||[]).includes(i)))fail('failed-precondition','انتظر اكتمال اللاعبين أو استكمل المقاعد ببوتات أولًا');
-        const names=Array.from({length:4},(_,i)=>r.players.find(p=>p.index===i)?.name||['سالم','عمر','خالد','علي'][i]);state=engine.start(names,r.mode,r.target,r.difficulty);state.swap_preview={};gate(state,'reveal',4500,now);r.status='playing';changed=true;
+        const names=Array.from({length:4},(_,i)=>r.players.find(p=>p.index===i)?.name||['سالم','عمر','خالد','علي'][i]);state=engine.start(names,r.target,r.difficulty);state.swap_preview={};gate(state,'reveal',4500,now);r.status='playing';changed=true;
       }else if(op==='move'){
         if(!state||r.status!=='playing'||state.presentation||!Number.isInteger(d.expectedRevision)||d.expectedRevision!==state.revision||now>=state.turnDueAt)fail('failed-precondition','تغيّر الدور؛ انتظر تحديث الطاولة');
         const p=r.players.find(p=>p.uid===uid).index,before=[...state.exposed];if(!engine.act(state,p,d.action,d.value))fail('invalid-argument','هذه الحركة غير مسموحة في دورك');

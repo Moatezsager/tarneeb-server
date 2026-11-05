@@ -2,6 +2,7 @@
 const {Timestamp}=require('firebase-admin/firestore');
 const {createHash}=require('node:crypto');
 const {AppError}=require('./errors');
+const {VERSION}=require('./service');
 const {removeRoom}=require('./room-lifecycle');
 const {queueDeletion}=require('./account-deletion');
 const validId=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
@@ -21,7 +22,7 @@ function createAdmin(db,auth,adminUids,maintenance){
       }),cursor:page.pageToken||''};
     }
     if(action==='rooms'){
-      const docs=await db.collection('rooms').where('protocolVersion','==',2).orderBy('updatedAt','desc').limit(30).get();
+      const docs=await db.collection('rooms').where('protocolVersion','in',[2,VERSION]).orderBy('updatedAt','desc').limit(30).get();
       return {items:docs.docs.map(doc=>{const r=doc.data();return {id:doc.id,code:r.code,status:r.status,hostName:r.hostName,mode:r.mode,locked:r.locked,players:r.players.map(p=>({name:p.name,index:p.index,status:p.status})),updatedAt:r.updatedAt.toMillis()};})};
     }
     if(action==='audit'){
@@ -79,7 +80,7 @@ function createAdmin(db,auth,adminUids,maintenance){
       if(!validId(data.roomId)||Object.keys(data).some(k=>k!=='roomId'))throw new AppError('invalid-argument','غرفة غير صالحة');
       const roomRef=db.doc(`rooms/${data.roomId}`),auditRef=db.collection('adminAudit').doc();
       return db.runTransaction(async tx=>{
-        const doc=await tx.get(roomRef);if(!doc.exists||doc.data().protocolVersion!==2)throw new AppError('not-found','الغرفة غير موجودة');
+        const doc=await tx.get(roomRef);if(!doc.exists||![2,VERSION].includes(doc.data().protocolVersion))throw new AppError('not-found','الغرفة غير موجودة');
         await removeRoom(tx,db,data.roomId,doc.data().memberUids);
         tx.create(auditRef,{actor,action,target:data.roomId,state:'completed',createdAt:Timestamp.now()});
         return {closed:true};

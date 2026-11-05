@@ -13,7 +13,7 @@ const enabled=process.env.FIRESTORE_EMULATOR_HOST==='127.0.0.1:18881';
 const authEnabled=enabled&&process.env.FIREBASE_AUTH_EMULATOR_HOST==='127.0.0.1:18882';
 let app,db,api,now=Date.now();
 const rid=()=>randomBytes(16).toString('hex');
-const call=(uid,op,payload={},requestId=rid())=>api(uid,{op,payload,requestId,protocolVersion:2});
+const call=(uid,op,payload={},requestId=rid())=>api(uid,{op,payload,requestId,protocolVersion:3});
 const reject=(p,code)=>assert.rejects(p,e=>e.code===code);
 before(async()=>{if(!enabled)return;app=initializeApp({projectId:'demo-tarneeb-secure'},'integration');db=getFirestore(app);api=createService(db,()=>now);});
 after(async()=>{if(db)await db.terminate();if(app)await deleteApp(app);});
@@ -27,7 +27,9 @@ test('atomic profiles, social graph, invitations, room seats, server turns, retr
   await reject(call('third','answerFriend',{requestId:requests.items[0]._id,accept:true}),'permission-denied');
   const acceptId=rid();await Promise.all([call('guest','answerFriend',{requestId:requests.items[0]._id,accept:true},acceptId),call('guest','answerFriend',{requestId:requests.items[0]._id,accept:true},acceptId)]);
   assert((await db.doc('users/host/friends/guest').get()).exists);assert((await db.doc('users/guest/friends/host').get()).exists);
-  const createId=rid(),params={mode:'Teams',target:31,difficulty:1,isPublic:false,password:'fixture-password'};
+  const createId=rid(),params={mode:'FFA',target:31,difficulty:1,isPublic:false,password:'fixture-password'};
+  await reject(call('host','createRoom',{...params,mode:'Teams'}),'invalid-argument');
+  await reject(api('host',{op:'activeRoom',payload:{},protocolVersion:2}),'failed-precondition');
   const created=await call('host','createRoom',params,createId),roomId=created.room._id,code=created.room.code;
   assert.deepEqual(await call('host','createRoom',params,createId),created);assert.equal((await db.collection('rooms').get()).size,1);
   await reject(call('host','createRoom',{...params,target:61},createId),'invalid-argument');
@@ -123,7 +125,7 @@ test('deployed-rule candidate denies direct mutations, private state and legacy 
 
  test('explicit bot seats are host-only, idempotent and replaced by joining humans',{skip:!enabled},async()=>{
   for(const uid of ['bot-host','bot-guest'])await call(uid,'profile',{name:uid,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
-  const {room}=await call('bot-host','createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''}),roomId=room._id;
+  const {room}=await call('bot-host','createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''}),roomId=room._id;
   assert.deepEqual(room.botSeats,[]);
   await reject(call('bot-host','start',{roomId}),'failed-precondition');
   const requestId=rid(),filled=await call('bot-host','fillBots',{roomId},requestId);
@@ -207,9 +209,9 @@ test('public profiles hide private data and wallets remain server-owned',{skip:!
 test('unchanged polls use read-only snapshots without room writes',{skip:!enabled},async()=>{
   const modes=[];
   const observed=createService({doc:p=>db.doc(p),collection:p=>db.collection(p),runTransaction:(fn,options)=>{modes.push(options?.readOnly===true);return db.runTransaction(fn,options);}},()=>now);
-  const query=(uid,op,payload={})=>observed(uid,{op,payload,requestId:rid(),protocolVersion:2});
+  const query=(uid,op,payload={})=>observed(uid,{op,payload,requestId:rid(),protocolVersion:3});
   await query('poll-reader','profile',{name:'reader',age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
-  const {room}=await query('poll-reader','createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''});
+  const {room}=await query('poll-reader','createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''});
   const before=await db.doc(`rooms/${room._id}`).get();modes.length=0;
   const results=await Promise.all(Array.from({length:8},(_,i)=>query('poll-reader','poll',{roomId:room._id,latencyMs:200+i})));
   assert.deepEqual(modes,Array(8).fill(true));assert(results.every(r=>r.room.revision===room.revision));
@@ -224,7 +226,7 @@ test('unchanged polls use read-only snapshots without room writes',{skip:!enable
 
 test('room chat is member-only, bounded, idempotent and independent of game turns',{skip:!enabled},async()=>{
   for(const uid of ['chatHost','chatGuest','chatOutsider'])await call(uid,'profile',{name:uid,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
-  const created=await call('chatHost','createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''});
+  const created=await call('chatHost','createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''});
   const roomId=created.room._id;
   await call('chatGuest','joinRoom',{code:created.room.code,password:''});
   await reject(call('chatOutsider','chat',{roomId,text:'hello'}),'permission-denied');
@@ -274,7 +276,7 @@ test('cosmetic purchases are atomic, owned once, priced by server and equipped o
   const restored=(await call('shopper','profile',{initialize:true})).profile;
   assert.equal(restored.frame,'emerald');
   assert.equal(restored.effect,'comet');
-  const room=(await call('shopper','createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''})).room;
+  const room=(await call('shopper','createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''})).room;
   const seated=room.players[0];
   assert.equal(seated.frame,'emerald');
   assert.equal(seated.effect,'comet');
@@ -293,13 +295,16 @@ test('cosmetic purchases are atomic, owned once, priced by server and equipped o
 test('gold rewards are awarded once at completed match and excluded from solo bot rooms',{skip:!enabled},async()=>{
   for(const uid of ['goldHost','goldGuest','goldSolo'])await call(uid,'profile',{name:uid,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
   for(const host of ['goldHost','goldSolo']){
-    const created=await call(host,'createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''});const roomId=created.room._id;
+    const created=await call(host,'createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''});const roomId=created.room._id;
     if(host==='goldHost')await call('goldGuest','joinRoom',{code:created.room.code,password:''});
     await call(host,'fillBots',{roomId});await call(host,'start',{roomId});
     const secretRef=db.doc(`roomSecrets/${roomId}`),secret=(await secretRef.get()).data(),state=JSON.parse(secret.state);
-    state.winner=0;state.presentation='';await secretRef.update({state:JSON.stringify(state)});now+=16000;
+    Object.assign(state,{round:2,phase:'collecting',presentation:'',bids:[11,0,2,3],
+      taken:[10,0,0,0],tricks:10,lead:0,trick:[25,13,14,15]});
+    await secretRef.update({state:JSON.stringify(state)});now+=16000;
     const outcomes=await Promise.all([call(host,'poll',{roomId}),call(host,'poll',{roomId})]);
     assert(outcomes.every(outcome=>outcome.view.winner===0&&outcome.room.status==='finished'));
+    assert(outcomes.every(outcome=>outcome.view.tricks===11));
     for(const collection of ['rooms','roomSecrets'])assert(!(await db.doc(`${collection}/${roomId}`).get()).exists);
     assert(!(await db.doc(`activeRooms/${host}`).get()).exists);
     assert.deepEqual((await call(host,'poll',{roomId})).view.hand,[]);
@@ -365,7 +370,7 @@ test('permanent deletion resumes safely and removes the Auth account and linked 
   await refs[8].set({fromUid:uid,toUid:peer});
   await refs[9].set({fromUid:peer,toUid:uid});
   await refs[10].set({memberUids:[uid,peer]});
-  const {room}=await call(uid,'createRoom',{mode:'Teams',target:31,difficulty:1,isPublic:true,password:''});
+  const {room}=await call(uid,'createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''});
   await call(peer,'joinRoom',{code:room.code,password:''});
   const admin=createAdmin(db,auth,new Set(['owner']));
   await reject(admin('owner','deleteUser',{uid:'owner',confirm:'owner'}),'permission-denied');
@@ -395,7 +400,7 @@ test('maintenance clears expired results, abandoned rooms and orphaned seat poin
   await roomRef.update({updatedAt:Timestamp.fromMillis(Date.now()-200000)});
   const result=db.doc('roomResults/expired-fixture'),pointer=db.doc('activeRooms/aaa-orphan');
   await result.set({expiresAt:Timestamp.fromMillis(Date.now()-1000)});
-  await pointer.set({roomId:'v2_MISSING'});
+  await pointer.set({roomId:'v3_MISSING'});
   const maintenance=createMaintenance(db,{});
   const report=await maintenance.run();
   assert.equal(report.errors,0);

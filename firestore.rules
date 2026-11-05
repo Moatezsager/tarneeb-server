@@ -3,7 +3,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
     function member(roomId) {
-      return signedIn() && get(/databases/$(database)/documents/rooms/$(roomId)).data.protocolVersion == 2
+      return signedIn() && get(/databases/$(database)/documents/rooms/$(roomId)).data.protocolVersion in [2, 3]
         && request.auth.uid in get(/databases/$(database)/documents/rooms/$(roomId)).data.memberUids;
     }
     // All mutations go through the authenticated, validated server transactions.
