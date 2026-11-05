@@ -32,9 +32,11 @@ test('scoring boundaries and hearts queen/ace trap match the Godot rules',()=>{
 test('zero is a real bid and lifts the total limit while score floors remain enforced',()=>{
   const s=e.start(['a','b','c','d'],61);e.nextRound(s);
   Object.assign(s,{phase:'bidding',dealer:3,current:0});
+  assert(!e.act(s,0,'bid',1));assert(!e.act(s,0,'bid',6));
   assert(e.act(s,0,'bid',0));assert.equal(s.phase,'bidding');
-  assert(e.act(s,1,'bid',1));assert(e.act(s,2,'bid',1));
-  assert(e.bids(s,3).includes(6));
+  assert(!e.act(s,1,'bid',1));assert(!e.act(s,1,'bid',6));
+  assert(e.act(s,1,'bid',2));assert(e.act(s,2,'bid',2));
+  assert.deepEqual(e.bids(s,3),[0,2,3,4,5,7,8,9,10,11,12,13]);
   for(const [score,floor] of [[20,0],[21,3],[30,3],[31,4],[40,4],[41,5]]){
     s.scores[3]=score;assert.equal(e.bids(s,3)[0],floor);
   }

@@ -1,7 +1,7 @@
 'use strict';
 // Server implementation of scripts/tarneeb_rules.gd. Card IDs and scoring are identical.
 const {randomInt} = require('node:crypto');
-const BIDS = Array.from({length:14},(_,i)=>i);
+const BIDS = [0,2,3,4,5,7,8,9,10,11,12,13];
 const QUEEN = 10, ACE = 12;
 const suit = c => Math.floor(c / 13);
 const rank = c => c % 13 + 2;
@@ -29,7 +29,7 @@ function bids(s,p){
   const score=s.scores[p],minimum=score>=41?5:score>=31?4:score>=21?3:0;
   const others=s.bids.filter((_,i)=>i!==p), hasZero=others.includes(0);
   const total=others.reduce((n,b)=>n+Math.max(0,b),0);
-  return BIDS.filter(b=>b>=minimum&&(b!==6||hasZero)
+  return BIDS.filter(b=>b>=minimum
     &&(p!==s.dealer||hasZero||b===0||(total+b>=11&&total+b!==13)));
 }
 function legal(s,p){
