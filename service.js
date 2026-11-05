@@ -5,9 +5,20 @@ const {AppError:HttpsError} = require('./errors');
 const engine = require('./engine');
 const {completeProfile,validateProfileEdit}=require('./profile');
 const VERSION=2, HOUR=3600000;
-const CATALOG=[{id:'emerald',name:'إطار الزمرد',price:100},{id:'royal',name:'الإطار الملكي',price:250},{id:'ruby',name:'إطار الياقوت',price:500}];
-const validFrame=x=>CATALOG.some(item=>item.id===x)?x:'';
-const storeView=(wallet,p)=>({gold:wallet?.gold||0,owned:wallet?.owned||[],equipped:validFrame(p.frame),items:CATALOG});
+const CATALOG=[
+  {id:'emerald',kind:'frame',name:'إطار الزمرد',price:100},
+  {id:'royal',kind:'frame',name:'الإطار الملكي',price:250},
+  {id:'ruby',kind:'frame',name:'إطار الياقوت',price:500},
+  {id:'falcon',kind:'frame',name:'جناح الصقر',price:180},
+  {id:'lunar',kind:'frame',name:'هلال الفضة',price:320},
+  {id:'sunforge',kind:'frame',name:'تاج الشمس',price:650},
+  {id:'comet',kind:'effect',name:'شرارة العنبر',price:120},
+  {id:'orbit',kind:'effect',name:'مدار اللؤلؤ',price:220},
+  {id:'pulse',kind:'effect',name:'نبض الياقوت',price:380},
+];
+const validCosmetic=(value,kind)=>CATALOG.some(item=>item.id===value&&item.kind===kind)?value:'';
+const cosmetics=p=>({frame:validCosmetic(p.frame,'frame'),effect:validCosmetic(p.effect,'effect')});
+const storeView=(wallet,p)=>({gold:wallet?.gold||0,owned:wallet?.owned||[],equipped:validCosmetic(p.frame,'frame'),equippedEffect:validCosmetic(p.effect,'effect'),items:CATALOG});
 const fail=(code,message)=>{throw new HttpsError(code,message);};
 const id=(x)=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
 function str(x,min,max){if(typeof x!=='string'||x.trim().length<min||x.length>max)fail('invalid-argument','بيانات غير صالحة');return x.trim();}
@@ -15,8 +26,8 @@ function keys(d,allowed){if(!d||typeof d!=='object'||Array.isArray(d)||Object.ke
 const stamp=n=>Timestamp.fromMillis(n);
 const hash=x=>createHash('sha256').update(x).digest('hex');
 function pendingRequest(snapshot,now){const request=snapshot.data();return request?.status==='pending'&&request.createdAt?.toMillis()>now-7*24*HOUR&&(!request.expiresAt||request.expiresAt.toMillis()>now);}
-function safeProfile(p){return {uid:p.uid,name:p.name,searchId:p.searchId,country:p.country,gender:p.gender,avatar:p.avatar,frame:validFrame(p.frame),points:p.points||0,...(p.showAge===true&&Number.isInteger(p.age)&&p.age>=1&&p.age<=120?{age:p.age}:{}),status:p.status==='online'&&p.lastSeen?.toMillis()>Date.now()-60000?'online':'offline'};}
-function player(p,index){return {uid:p.uid,name:p.name,avatar:p.avatar,frame:validFrame(p.frame),country:p.country,index,status:'connected'};}
+function safeProfile(p){return {uid:p.uid,name:p.name,searchId:p.searchId,country:p.country,gender:p.gender,avatar:p.avatar,...cosmetics(p),points:p.points||0,...(p.showAge===true&&Number.isInteger(p.age)&&p.age>=1&&p.age<=120?{age:p.age}:{}),status:p.status==='online'&&p.lastSeen?.toMillis()>Date.now()-60000?'online':'offline'};}
+function player(p,index){return {uid:p.uid,name:p.name,avatar:p.avatar,...cosmetics(p),country:p.country,index,status:'connected'};}
 function publicRoom(r){const {secret,gameState,chatCooldown,chat,...data}=r;return {...data,createdAt:r.createdAt.toMillis(),updatedAt:r.updatedAt.toMillis(),expiresAt:r.expiresAt.toMillis()};}
 function passwordHash(password,salt){return scryptSync(password,salt,32).toString('hex');}
 function gate(state,kind,ms,now){state.presentation=kind;state.presentationUntil=now+ms;state.turnDueAt=now+ms;}
@@ -77,7 +88,7 @@ function createService(db, clock=Date.now){
       if(searchId!==old.searchId){reservation=await tx.get(ref(`searchIds/${searchId}`));if(reservation.exists&&reservation.data().uid!==uid)fail('aborted','أعد المحاولة لحجز المعرف');}
       const [stats,wallet]=await tx.getAll(ref(`rankedStats/${uid}`),ref(`wallets/${uid}`));
       const age=d.initialize?(old.age||0):(d.age??old.age??0);
-      const p={uid,name,age,showAge:d.initialize?old.showAge===true:(d.showAge??(old.showAge===true)),searchId,country,gender,avatar,frame:validFrame(old.frame),status:'online',lastSeen:stamp(now),updatedAt:stamp(now)};
+      const p={uid,name,age,showAge:d.initialize?old.showAge===true:(d.showAge??(old.showAge===true)),searchId,country,gender,avatar,...cosmetics(old),status:'online',lastSeen:stamp(now),updatedAt:stamp(now)};
       p.profileComplete=completeProfile(p);
       if(d.complete&&!p.profileComplete)fail('invalid-argument','أكمل الاسم والعمر والجنس والبلد والصورة أولًا');
       tx.set(ref(`searchIds/${searchId}`),{uid,createdAt:stamp(now)});tx.set(ref(`users/${uid}`),p,{merge:true});
@@ -92,7 +103,7 @@ function createService(db, clock=Date.now){
       return {profile:{...safeProfile(p),...(d.uid===uid?{age:p.age}:{}),lastSeenAt:p.lastSeen?.toMillis()||0,points:stats.data()?.points||0,games:stats.data()?.games||0,wins:stats.data()?.wins||0},relationship:d.uid===uid?'self':friend.exists?'friends':hasIncoming?'incoming':hasSent?'pending':'none',requestId:hasIncoming?hash(`${d.uid}:${uid}`):undefined};
     }
     if(['store','buyItem','equipItem'].includes(op)){
-      keys(d,op==='store'?[]:['itemId']);const p=await profile(tx,uid);
+      keys(d,op==='store'?[]:op==='equipItem'?['itemId','slot']:['itemId']);const p=await profile(tx,uid);
       const walletRef=ref(`wallets/${uid}`);
       const [snapshot,stats]=await tx.getAll(walletRef,ref(`rankedStats/${uid}`));
       const wallet=snapshot.data()||{gold:0,owned:[]};wallet.owned=wallet.owned||[];
@@ -105,8 +116,11 @@ function createService(db, clock=Date.now){
           tx.set(walletRef,{gold:wallet.gold,owned:wallet.owned,updatedAt:stamp(now)},{merge:true});
         }
         if(op==='equipItem'){
-          if(d.itemId&&!wallet.owned.includes(d.itemId))fail('permission-denied','اشترِ الإطار أولًا');
-          p.frame=d.itemId;tx.update(ref(`users/${uid}`),{frame:p.frame,updatedAt:stamp(now)});
+          const slot=item?.kind??d.slot??'frame';
+          if(!['frame','effect'].includes(slot)||(d.slot!==undefined&&d.slot!==slot))fail('invalid-argument','خانة تجهيز غير صالحة');
+          if(item&&!wallet.owned.includes(item.id))fail('permission-denied','اشترِ القطعة أولًا');
+          p[slot]=d.itemId;
+          tx.update(ref(`users/${uid}`),{[slot]:p[slot],updatedAt:stamp(now)});
         }
       }
       return {...storeView(wallet,p),points:stats.data()?.points||0};
