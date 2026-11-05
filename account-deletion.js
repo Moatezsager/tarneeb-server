@@ -28,7 +28,7 @@ async function deleteMatching(db, query) {
   }
 }
 
-async function detachRooms(db, uid) {
+async function detachRooms(db, uid, invalidateRoom) {
   const query = db.collection('rooms').where('memberUids','array-contains',uid);
   for (;;) {
     const page = await query.limit(25).get();
@@ -60,18 +60,19 @@ async function detachRooms(db, uid) {
         tx.set(doc.ref, room);
         tx.set(secretRef, secret);
       });
+      invalidateRoom?.(doc.id);
     }
   }
 }
 
-async function processDeletion(db, auth, job) {
+async function processDeletion(db, auth, job, invalidateRoom) {
   const current = await job.get();
   if (current.data()?.state !== 'pending') return false;
   const uid = job.id;
   try { await auth.deleteUser(uid); }
   catch (error) { if (error.code !== 'auth/user-not-found') throw error; }
 
-  await detachRooms(db, uid);
+  await detachRooms(db, uid, invalidateRoom);
   const profile = db.doc(`users/${uid}`);
   // Remove reciprocal friendships while each original friend ID is still available for retries.
   for (;;) {

@@ -235,7 +235,7 @@ test('public profiles hide private data and wallets remain server-owned',{skip:!
   assert.equal((await call('social-a','store')).gold,0);
 });
 
-test('unchanged polls use read-only snapshots without room writes',{skip:!enabled},async()=>{
+test('concurrent polls share a read-only snapshot and room writes invalidate it',{skip:!enabled},async()=>{
   const modes=[];
   const observed=createService({doc:p=>db.doc(p),collection:p=>db.collection(p),runTransaction:(fn,options)=>{modes.push(options?.readOnly===true);return db.runTransaction(fn,options);}},()=>now);
   const query=(uid,op,payload={})=>observed(uid,{op,payload,requestId:rid(),protocolVersion:3});
@@ -243,13 +243,24 @@ test('unchanged polls use read-only snapshots without room writes',{skip:!enable
   const {room}=await query('poll-reader','createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''});
   const before=await db.doc(`rooms/${room._id}`).get();modes.length=0;
   const results=await Promise.all(Array.from({length:8},(_,i)=>query('poll-reader','poll',{roomId:room._id,latencyMs:200+i})));
-  assert.deepEqual(modes,Array(8).fill(true));assert(results.every(r=>r.room.revision===room.revision));
+  assert.deepEqual(modes,[true]);assert(results.every(r=>r.room.revision===room.revision));
+  await reject(query('outsider','poll',{roomId:room._id}),'permission-denied');
+  assert.deepEqual(modes,[true]);
   assert((await db.doc(`rooms/${room._id}`).get()).updateTime.isEqual(before.updateTime));
   now+=16000;modes.length=0;
   const heartbeat=await query('poll-reader','poll',{roomId:room._id,latencyMs:300});
   assert.deepEqual(modes,[true,false]);assert(heartbeat.room.revision>room.revision);
   assert.equal(heartbeat.room.players[0].latencyMs,300);assert.equal(heartbeat.room.players[0].latencyAt,now);
+  await query('poll-reader','poll',{roomId:room._id});
+  const filled=await query('poll-reader','fillBots',{roomId:room._id});
+  const updated=await query('poll-reader','poll',{roomId:room._id});
+  assert.equal(updated.room.revision,filled.room.revision);
+  assert.deepEqual(updated.room.botSeats,filled.room.botSeats);
+  modes.length=0;
   for(const latencyMs of [-1,60001,1.2,'300',null])await reject(query('poll-reader','poll',{roomId:room._id,latencyMs}),'invalid-argument');
+  assert.deepEqual(modes,[]);
+  await query('poll-reader','leave',{roomId:room._id});
+  await reject(query('poll-reader','poll',{roomId:room._id}),'not-found');
 });
 
 

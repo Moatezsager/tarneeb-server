@@ -2,7 +2,7 @@
 const {initializeApp,applicationDefault}=require('firebase-admin/app');
 const {getAuth}=require('firebase-admin/auth');
 const {getFirestore}=require('firebase-admin/firestore');
-const {createService}=require('./service');
+const {createService,VERSION}=require('./service');
 const {createMaintenance,INTERVAL_MS}=require('./maintenance');
 const {createAdmin}=require('./admin');
 const {createHttpServer}=require('./http');
@@ -18,12 +18,12 @@ const adminUids=new Set((process.env.ADMIN_UIDS||'').split(',').map(s=>s.trim())
 if(!adminUids.size)throw Error('ADMIN_UIDS must contain at least one Firebase Authentication UID');
 initializeApp({credential:applicationDefault(),projectId});
 const db=getFirestore(databaseId),auth=getAuth(),execute=createService(db);
-const maintenance=createMaintenance(db,auth);
-const server=createHttpServer({auth,execute,admin:createAdmin(db,auth,adminUids,maintenance),adminUids,origin,webOrigins,projectId,webApiKey:process.env.FIREBASE_WEB_API_KEY,production,maintenance});
+const maintenance=createMaintenance(db,auth,execute.invalidateRoom);
+const server=createHttpServer({auth,execute,admin:createAdmin(db,auth,adminUids,maintenance,execute.invalidateRoom),adminUids,origin,webOrigins,projectId,webApiKey:process.env.FIREBASE_WEB_API_KEY,production,maintenance});
 const cleanup=setInterval(maintenance.run,INTERVAL_MS);
 cleanup.unref();
 server.listen(Number(process.env.PORT||10000),'0.0.0.0',()=>{
-  console.log('Tarneeb server listening; protocol 2');
+  console.log(`Tarneeb server listening; protocol ${VERSION}`);
   maintenance.request();
 });
 for(const signal of ['SIGTERM','SIGINT'])process.once(signal,()=>{

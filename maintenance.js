@@ -7,11 +7,12 @@ const {processDeletion} = require('./account-deletion');
 
 const INTERVAL_MS = 120000;
 const ABANDONED_MS = 180000;
+const EXPIRY_INTERVAL_MS = 15*60000;
 const EXPIRING = ['rooms','roomSecrets','roomResults','operations','friendRequests','roomInvites','rateLimits','accountDeletions'];
 
-function createMaintenance(db, auth) {
+function createMaintenance(db, auth, invalidateRoom) {
   const state = {running:false, lastRun:0, removed:0, accounts:0, errors:0, intervalSeconds:INTERVAL_MS/1000};
-  let pointerCursor, nextPointerScan = 0, rerun = false;
+  let pointerCursor, nextPointerScan = 0, nextExpirySweep = 0, rerun = false;
   const snapshot = () => ({...state});
 
   function failure(error) {
@@ -28,6 +29,7 @@ function createMaintenance(db, auth) {
           else if (result.value) state.removed++;
         }
       }
+      return docs.length;
     } catch (error) { failure(error); }
   }
   async function run() {
@@ -38,7 +40,7 @@ function createMaintenance(db, auth) {
     try {
       const jobs = await db.collection('accountDeletions').where('nextAttemptAt','<=',now).limit(4).get();
       for (const job of jobs.docs) {
-        try { if (await processDeletion(db,auth,job.ref)) state.accounts++; }
+        try { if (await processDeletion(db,auth,job.ref,invalidateRoom)) state.accounts++; }
         catch (error) {
           failure(error);
           try {
@@ -49,18 +51,31 @@ function createMaintenance(db, auth) {
           } catch (retryError) { failure(retryError); }
         }
       }
-      for (const name of EXPIRING) {
-        await sweep(db.collection(name).where('expiresAt','<=',now), doc => removeExpired(db,doc.ref,now));
+      if(now.toMillis()>=nextExpirySweep){
+        let backlog=false;
+        for (const name of EXPIRING) {
+          const count=await sweep(db.collection(name).where('expiresAt','<=',now),async doc=>{
+            const removed=await removeExpired(db,doc.ref,now);
+            if(removed&&['rooms','roomSecrets','roomResults'].includes(name))invalidateRoom?.(doc.id);
+            return removed;
+          });
+          backlog=backlog||count===80;
+        }
+        nextExpirySweep=now.toMillis()+(backlog?INTERVAL_MS:EXPIRY_INTERVAL_MS);
       }
       const cutoff = Timestamp.fromMillis(now.toMillis()-ABANDONED_MS);
       const stale = db.collection('rooms').where('protocolVersion','in',[2,VERSION])
         .where('updatedAt','<=',cutoff).orderBy('updatedAt','desc');
-      await sweep(stale, doc => db.runTransaction(async tx => {
-        const room = (await tx.get(doc.ref)).data();
-        if (!room || room.updatedAt.toMillis()>cutoff.toMillis()) return false;
-        await removeRoom(tx,db,doc.id,room.memberUids);
-        return true;
-      }));
+      await sweep(stale, async doc => {
+        const removed=await db.runTransaction(async tx => {
+          const room = (await tx.get(doc.ref)).data();
+          if (!room || room.updatedAt.toMillis()>cutoff.toMillis()) return false;
+          await removeRoom(tx,db,doc.id,room.memberUids);
+          return true;
+        });
+        if(removed)invalidateRoom?.(doc.id);
+        return removed;
+      });
 
       if (now.toMillis() >= nextPointerScan) {
         nextPointerScan = now.toMillis()+15*60000;
@@ -90,7 +105,8 @@ function createMaintenance(db, auth) {
     }
     return snapshot();
   }
-  function request() {
+  function request(forceExpiry=false) {
+    if(forceExpiry)nextExpirySweep=0;
     if (state.running) rerun=true;
     else void run();
   }

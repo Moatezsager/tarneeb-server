@@ -6,7 +6,7 @@ const {VERSION}=require('./service');
 const {removeRoom}=require('./room-lifecycle');
 const {queueDeletion}=require('./account-deletion');
 const validId=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
-function createAdmin(db,auth,adminUids,maintenance){
+function createAdmin(db,auth,adminUids,maintenance,invalidateRoom){
   return async function admin(actor,action,data={}){
     if(!adminUids.has(actor))throw new AppError('permission-denied','غير مصرح لك بالإدارة');
     if(action==='users'){
@@ -32,7 +32,7 @@ function createAdmin(db,auth,adminUids,maintenance){
     if(action==='cleanup'){
       if(Object.keys(data).length)throw new AppError('invalid-argument','طلب غير صالح');
       if(!maintenance)throw new AppError('unavailable','خدمة التنظيف غير متاحة');
-      if(!maintenance.snapshot().running)maintenance.request();
+      if(!maintenance.snapshot().running)maintenance.request(true);
       return maintenance.snapshot();
     }
     if(action==='deleteUser'){
@@ -79,12 +79,13 @@ function createAdmin(db,auth,adminUids,maintenance){
     if(action==='closeRoom'){
       if(!validId(data.roomId)||Object.keys(data).some(k=>k!=='roomId'))throw new AppError('invalid-argument','غرفة غير صالحة');
       const roomRef=db.doc(`rooms/${data.roomId}`),auditRef=db.collection('adminAudit').doc();
-      return db.runTransaction(async tx=>{
+      await db.runTransaction(async tx=>{
         const doc=await tx.get(roomRef);if(!doc.exists||![2,VERSION].includes(doc.data().protocolVersion))throw new AppError('not-found','الغرفة غير موجودة');
         await removeRoom(tx,db,data.roomId,doc.data().memberUids);
         tx.create(auditRef,{actor,action,target:data.roomId,state:'completed',createdAt:Timestamp.now()});
-        return {closed:true};
       });
+      invalidateRoom?.(data.roomId);
+      return {closed:true};
     }
     throw new AppError('not-found','عملية غير موجودة');
   };

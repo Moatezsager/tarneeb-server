@@ -4,7 +4,7 @@ const {readFileSync}=require('node:fs');
 const path=require('node:path');
 const {AppError}=require('./errors');
 const {VERSION}=require('./service');
-const statusCodes={'invalid-argument':400,'unauthenticated':401,'permission-denied':403,'not-found':404,'already-exists':409,'failed-precondition':409,'aborted':409,'resource-exhausted':429,'unavailable':503};
+const statusCodes={'invalid-argument':400,'unauthenticated':401,'permission-denied':403,'not-found':404,'already-exists':409,'failed-precondition':409,'aborted':409,'resource-exhausted':429,'quota-exhausted':429,'unavailable':503};
 async function body(req){
   if(!/^application\/json(?:\s*;|$)/i.test(req.headers['content-type']||''))throw new AppError('invalid-argument','JSON مطلوب');
   const chunks=[];let size=0;
@@ -83,7 +83,10 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,project
     }catch(err){
       metrics.errors++;const known=err instanceof AppError;
       // Never return SDK internals, credentials, hands or request bodies to the caller.
-      const code=known?err.code:'unavailable';json(res,statusCodes[code]||503,{error:{status:code.replaceAll('-','_').toUpperCase(),message:known?err.message:'الخدمة غير متاحة مؤقتًا؛ حاول مجددًا'}});
+      const quota=!known&&(err.code===8||err.code==='RESOURCE_EXHAUSTED');
+      const code=known?err.code:quota?'quota-exhausted':'unavailable';
+      if(quota)res.setHeader('Retry-After','60');
+      json(res,statusCodes[code]||503,{error:{status:code.replaceAll('-','_').toUpperCase(),message:known?err.message:quota?'بلغت قاعدة البيانات حد الاستخدام مؤقتًا؛ يمكنك اللعب دون اتصال':'الخدمة غير متاحة مؤقتًا؛ حاول مجددًا'}});
       if(!known)console.error(JSON.stringify({event:'request_failed',code:String(err.code||'internal').slice(0,80)}));
     }finally{metrics.inFlight--;}
   });

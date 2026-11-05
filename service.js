@@ -27,7 +27,7 @@ function keys(d,allowed){if(!d||typeof d!=='object'||Array.isArray(d)||Object.ke
 const stamp=n=>Timestamp.fromMillis(n);
 const hash=x=>createHash('sha256').update(x).digest('hex');
 function pendingRequest(snapshot,now){const request=snapshot.data();return request?.status==='pending'&&request.createdAt?.toMillis()>now-7*24*HOUR&&(!request.expiresAt||request.expiresAt.toMillis()>now);}
-function safeProfile(p){return {uid:p.uid,name:p.name,searchId:p.searchId,country:p.country,gender:p.gender,avatar:p.avatar,...cosmetics(p),points:p.points||0,...(p.showAge===true&&Number.isInteger(p.age)&&p.age>=1&&p.age<=120?{age:p.age}:{}),status:p.status==='online'&&p.lastSeen?.toMillis()>Date.now()-60000?'online':'offline'};}
+function safeProfile(p){return {uid:p.uid,name:p.name,searchId:p.searchId,country:p.country,gender:p.gender,avatar:p.avatar,...cosmetics(p),points:p.points||0,...(p.showAge===true&&Number.isInteger(p.age)&&p.age>=1&&p.age<=120?{age:p.age}:{}),status:p.status==='online'&&p.lastSeen?.toMillis()>Date.now()-150000?'online':'offline'};}
 function player(p,index){return {uid:p.uid,name:p.name,avatar:p.avatar,...cosmetics(p),country:p.country,index,status:'connected'};}
 function publicRoom(r){const {secret,gameState,chatCooldown,chat,...data}=r;return {...data,createdAt:r.createdAt.toMillis(),updatedAt:r.updatedAt.toMillis(),expiresAt:r.expiresAt.toMillis()};}
 function passwordHash(password,salt){return scryptSync(password,salt,32).toString('hex');}
@@ -73,9 +73,25 @@ function reply(room,state,uid,now){
 function createService(db, clock=Date.now){
   // shortcut: single-instance memory limits reset on restart; share counters before scaling out.
   const rateLimits=new Map();
+  // shortcut: five-second snapshots bound cross-instance staleness; use shared invalidation before scaling out.
+  const pollCache=new Map();
   const ref=p=>db.doc(p);
+  function pollSnapshot(roomId,now){
+    const cached=pollCache.get(roomId);
+    if(cached&&now<cached.until)return cached.promise;
+    const entry={until:now+5000,promise:db.runTransaction(async tx=>{
+      const docs=await tx.getAll(ref(`rooms/${roomId}`),ref(`roomSecrets/${roomId}`));
+      if(!docs[0].exists)docs.push(await tx.get(ref(`roomResults/${roomId}`)));
+      return docs;
+    },{readOnly:true})};
+    pollCache.delete(roomId);
+    if(pollCache.size>=256)pollCache.delete(pollCache.keys().next().value);
+    pollCache.set(roomId,entry);
+    entry.promise.catch(()=>{if(pollCache.get(roomId)===entry)pollCache.delete(roomId);});
+    return entry.promise;
+  }
   const profile=async(tx,uid)=>{const s=await tx.get(ref(`users/${uid}`));if(!s.exists)fail('failed-precondition','أكمل ملفك الشخصي أولًا');const p=s.data();if(p.deleting)fail('permission-denied','الحساب قيد الحذف');if(p.uid!==uid)fail('failed-precondition','أعد مزامنة ملفك الشخصي');return p;};
-  async function roomData(tx,roomId,allowMissing=false){if(!id(roomId))fail('invalid-argument','رمز غرفة غير صالح');const [r,s]=await tx.getAll(ref(`rooms/${roomId}`),ref(`roomSecrets/${roomId}`));if(!r.exists&&allowMissing)return null;if(!r.exists||r.data().protocolVersion!==VERSION||!s.exists)fail('not-found','الغرفة غير موجودة أو تحتاج إصدارًا أحدث');if(r.data().expiresAt.toMillis()<=clock())fail('not-found','انتهت صلاحية الغرفة');return [r.data(),s.data(),s.data().state?JSON.parse(s.data().state):null];}
+  async function roomData(tx,roomId,allowMissing=false,snapshot){if(!id(roomId))fail('invalid-argument','رمز غرفة غير صالح');const [r,s]=snapshot??await tx.getAll(ref(`rooms/${roomId}`),ref(`roomSecrets/${roomId}`));if(!r.exists&&allowMissing)return null;if(!r.exists||r.data().protocolVersion!==VERSION||!s.exists)fail('not-found','الغرفة غير موجودة أو تحتاج إصدارًا أحدث');if(r.data().expiresAt.toMillis()<=clock())fail('not-found','انتهت صلاحية الغرفة');return [r.data(),s.data(),s.data().state?JSON.parse(s.data().state):null];}
   async function saveRoom(tx,r,secret,state,now){
     r.updatedAt=stamp(now);r.expiresAt=stamp(now+(r.status==='finished'?HOUR:6*HOUR));r.revision=(r.revision||0)+1;
     if(state?.winner>=0&&r.status!=='finished'){
@@ -93,7 +109,7 @@ function createService(db, clock=Date.now){
     }
     tx.set(ref(`rooms/${r._id}`),r);tx.set(ref(`roomSecrets/${r._id}`),{...secret,state:state?JSON.stringify(state):'',expiresAt:r.expiresAt});
   }
-  async function operate(tx,uid,op,d,now,readOnly=false){
+  async function operate(tx,uid,op,d,now,pollDocs){
     if(op==='presence'){
       keys(d,['online']);if(typeof d.online!=='boolean')fail('invalid-argument','حالة غير صالحة');await profile(tx,uid);
       tx.update(ref(`users/${uid}`),{status:d.online?'online':'offline',lastSeen:stamp(now),updatedAt:stamp(now)});return {status:'ok'};
@@ -265,12 +281,11 @@ function createService(db, clock=Date.now){
       return reply(r,state,uid,now);
     }
     if(['poll','fillBots','start','move','nextRound','readyRound','leave'].includes(op)){
-      keys(d,op==='move'?['roomId','action','value','expectedRevision']:op==='poll'?['roomId','latencyMs']:op==='readyRound'?['roomId','round']:['roomId']);
-      if(d.latencyMs!==undefined&&(!Number.isInteger(d.latencyMs)||d.latencyMs<0||d.latencyMs>60000))fail('invalid-argument','قياس اتصال غير صالح');
-      const entry=await roomData(tx,d.roomId,op==='poll'||op==='leave');
+      if(op!=='poll')keys(d,op==='move'?['roomId','action','value','expectedRevision']:op==='readyRound'?['roomId','round']:['roomId']);
+      const entry=await roomData(tx,d.roomId,op==='poll'||op==='leave',pollDocs);
       if(!entry){
         if(op==='leave')return {status:'left'};
-        const result=(await tx.get(ref(`roomResults/${d.roomId}`))).data();
+        const result=(pollDocs?.[2]??await tx.get(ref(`roomResults/${d.roomId}`))).data();
         const player=result?.room?.players?.find(player=>player.uid===uid);
         if(!player||!result.expiresAt||result.expiresAt.toMillis()<=now)fail('not-found','الغرفة غير موجودة');
         return {room:result.room,view:{...result.view,seat:player.index},serverTime:now};
@@ -317,13 +332,13 @@ function createService(db, clock=Date.now){
         if(!state.readyUids.includes(uid)){state.readyUids.push(uid);state.revision++;changed=true;}
         changed=advance(state,r,now)||changed;
       }else changed=advance(state,r,now)||changed;
-      if(changed&&readOnly)return null;
+      if(changed&&pollDocs)return null;
       if(changed)await saveRoom(tx,r,secret,state,now);return reply(r,state,uid,now);
     }
     fail('invalid-argument','عملية غير معروفة');
   }
   const readOps=new Set(['poll','search','friends','requests','invites','listRooms','activeRoom','presence','publicProfile','store']);
-  return async function execute(uid,input){
+  async function execute(uid,input){
     if(!id(uid))fail('unauthenticated','سجل دخولك أولًا');keys(input,['op','payload','requestId','protocolVersion']);if(input.protocolVersion!==VERSION)fail('failed-precondition','حدّث اللعبة إلى الإصدار الجديد');
     const op=str(input.op,1,32),d=input.payload??{},mutation=!readOps.has(op);if(mutation&&(!id(input.requestId)||input.requestId.length<16))fail('invalid-argument','معرّف عملية مطلوب');
     // Limit attempts, including failed passwords, separately from the operation transaction.
@@ -334,12 +349,15 @@ function createService(db, clock=Date.now){
     const prior=rateLimits.get(uid),rate=prior?.window===window?prior:{window,count:0,sensitive:0};
     if(rate.count>=180||(sensitive&&rate.sensitive>=12))fail('resource-exhausted','طلبات كثيرة؛ انتظر دقيقة');
     rate.count++;if(sensitive)rate.sensitive++;rateLimits.set(uid,rate);
-    // Unchanged polls use a consistent snapshot without locking out player moves.
     if(op==='poll'){
-      const snapshot=await db.runTransaction(tx=>operate(tx,uid,op,d,clock(),true),{readOnly:true});
-      if(snapshot!==null)return snapshot;
+      keys(d,['roomId','latencyMs']);
+      if(!id(d.roomId))fail('invalid-argument','رمز غرفة غير صالح');
+      if(d.latencyMs!==undefined&&(!Number.isInteger(d.latencyMs)||d.latencyMs<0||d.latencyMs>60000))fail('invalid-argument','قياس اتصال غير صالح');
+      const docs=await pollSnapshot(d.roomId,now);
+      const result=await operate(null,uid,op,d,clock(),docs);
+      if(result!==null)return result;
     }
-    return db.runTransaction(async tx=>{
+    const result=await db.runTransaction(async tx=>{
       const receipt=mutation?ref(`operations/${hash(`${uid}:${input.requestId}`)}`):null;
       const fingerprint=hash(JSON.stringify({op,d}));
       if(receipt){
@@ -351,7 +369,12 @@ function createService(db, clock=Date.now){
       if(receipt)tx.create(receipt,{uid,fingerprint,result:JSON.stringify(result),expiresAt:stamp(now+24*HOUR)});
       return result;
     });
-  };
+    if(mutation||op==='poll')pollCache.delete(result?.room?._id??d.roomId);
+    if(op==='equipItem')pollCache.clear();
+    return result;
+  }
+  execute.invalidateRoom=roomId=>pollCache.delete(roomId);
+  return execute;
 }
 async function removeExpired(db,ref,cutoff){
   return db.runTransaction(async tx=>{

@@ -10,7 +10,7 @@ test('HTTP boundary verifies identity, revocation, admin cookies, origin and pri
     async createSessionCookie(){return 'fixture-session';},
     async verifySessionCookie(cookie,revoked){assert.equal(revoked,true);assert.equal(cookie,'fixture-session');return {uid:'owner'};}
   };
-  const server=createHttpServer({auth,execute:async(uid,data)=>{executed++;if(data.fail)throw Error('private credential');return {uid};},admin:async()=>({items:[]}),adminUids:new Set(['owner']),origin:'https://fixture.invalid',webOrigins:['https://game.fixture.invalid'],webApiKey:'public-fixture',projectId:'demo-tarneeb'});
+  const server=createHttpServer({auth,execute:async(uid,data)=>{executed++;if(data.fail)throw Error('private credential');if(data.quota)throw Object.assign(Error('internal quota details'),{code:8});return {uid};},admin:async()=>({items:[]}),adminUids:new Set(['owner']),origin:'https://fixture.invalid',webOrigins:['https://game.fixture.invalid'],webApiKey:'public-fixture',projectId:'demo-tarneeb'});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
   const base=`http://127.0.0.1:${server.address().port}`;
@@ -42,6 +42,9 @@ test('HTTP boundary verifies identity, revocation, admin cookies, origin and pri
   assert.equal((await post('/admin/api/closeRoom',{roomId:'room'},{Cookie:'tarneeb_admin=fixture-session',Origin:'https://evil.invalid'})).status,403);
   const error=await post('/online',{data:{fail:true}},{Authorization:'Bearer player'});
   assert.equal(error.status,503);assert(!(await error.text()).includes('private credential'));
+  const quota=await post('/online',{data:{quota:true}},{Authorization:'Bearer player'});
+  assert.equal(quota.status,429);assert.equal(quota.headers.get('retry-after'),'60');
+  assert.equal((await quota.json()).error.status,'QUOTA_EXHAUSTED');
 });
 test('administrator service rejects outsiders and protects administrator accounts',async()=>{
   const admin=createAdmin({}, {}, new Set(['owner']));
