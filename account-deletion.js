@@ -74,13 +74,25 @@ async function processDeletion(db, auth, job, invalidateRoom) {
 
   await detachRooms(db, uid, invalidateRoom);
   const profile = db.doc(`users/${uid}`);
+  async function unlink(others) {
+    await db.runTransaction(async tx=>{
+      const users=await tx.getAll(...others.map(other=>db.doc(`users/${other}`)));
+      for(const user of users){
+        const list=user.data()?.contacts;
+        if(Array.isArray(list))tx.update(user.ref,{contacts:list.filter(friend=>friend.uid!==uid)});
+        else tx.delete(user.ref.collection('friends').doc(uid));
+      }
+    });
+  }
+  const embedded=(await profile.get()).data()?.contacts||[];
+  for(let i=0;i<embedded.length;i+=50)await unlink(embedded.slice(i,i+50).map(friend=>friend.uid));
   // Remove reciprocal friendships while each original friend ID is still available for retries.
   for (;;) {
     const friends = await profile.collection('friends').limit(100).get();
     if (friends.empty) break;
+    await unlink(friends.docs.map(friend=>friend.id));
     const batch = db.batch();
     for (const friend of friends.docs) {
-      batch.delete(db.doc(`users/${friend.id}/friends/${uid}`));
       batch.delete(friend.ref);
     }
     await batch.commit();

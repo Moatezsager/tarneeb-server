@@ -2,20 +2,23 @@ const {test,before,after}=require('node:test');
 const assert=require('node:assert/strict');
 const {randomBytes}=require('node:crypto');
 const {initializeApp,deleteApp}=require('firebase-admin/app');
-const {getFirestore,Timestamp}=require('firebase-admin/firestore');
+const {getFirestore,Timestamp,FieldValue}=require('firebase-admin/firestore');
 const {getAuth}=require('firebase-admin/auth');
 const {createService,removeExpired}=require('../service');
 const engine=require('../engine');
 const {createAdmin}=require('../admin');
 const {processDeletion}=require('../account-deletion');
 const {createMaintenance}=require('../maintenance');
+const {createNotifications}=require('../notifications');
 const enabled=process.env.FIRESTORE_EMULATOR_HOST==='127.0.0.1:18881';
 const authEnabled=enabled&&process.env.FIREBASE_AUTH_EMULATOR_HOST==='127.0.0.1:18882';
 let app,db,api,now=Date.now();
 const rid=()=>randomBytes(16).toString('hex');
+const contact=async(uid,other)=>(await db.doc(`users/${uid}`).get()).data().contacts.some(friend=>friend.uid===other);
 const call=(uid,op,payload={},requestId=rid())=>api(uid,{op,payload,requestId,protocolVersion:3});
 const reject=(p,code)=>assert.rejects(p,e=>e.code===code);
-before(async()=>{if(!enabled)return;app=initializeApp({projectId:'demo-tarneeb-secure'},'integration');db=getFirestore(app);api=createService(db,()=>now);});
+const notifications=createNotifications();
+before(async()=>{if(!enabled)return;app=initializeApp({projectId:'demo-tarneeb-secure'},'integration');db=getFirestore(app);api=createService(db,()=>now,notifications);});
 after(async()=>{if(db)await db.terminate();if(app)await deleteApp(app);});
 test('atomic profiles, social graph, invitations, room seats, server turns, retries and privacy',{skip:!enabled},async()=>{
   for(const uid of ['host','guest','third','fourth','fifth'])await call(uid,'profile',{name:uid,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
@@ -23,10 +26,18 @@ test('atomic profiles, social graph, invitations, room seats, server turns, retr
   await reject(call('guest','profile',{uid:'host',name:'fake'}),'invalid-argument');
   await db.doc('users/host').set({legacyField:'preserved'},{merge:true});await call('host','profile',{name:'Changed'});assert.equal((await db.doc('users/host').get()).data().legacyField,'preserved');
   const search=(await db.doc('users/host').get()).data().searchId;assert.equal((await call('guest','search',{searchId:search})).profile.uid,'host');
-  await call('host','requestFriend',{toUid:'guest'});const requests=await call('guest','requests');assert.equal(requests.items.length,1);
+  const signal=new AbortController().signal;
+  const initial=notifications.wait('guest','',signal);
+  const incoming=notifications.wait('guest',initial.cursor,signal);
+  await call('host','requestFriend',{toUid:'guest'});
+  assert.deepEqual((await incoming).events.map(({kind,name})=>({kind,name})),[{kind:'requests',name:'Changed'}]);
+  assert.equal(notifications.wait('third','',signal).events.length,0);
+  const requests=await call('guest','requests');assert.equal(requests.items.length,1);
   await reject(call('third','answerFriend',{requestId:requests.items[0]._id,accept:true}),'permission-denied');
   const acceptId=rid();await Promise.all([call('guest','answerFriend',{requestId:requests.items[0]._id,accept:true},acceptId),call('guest','answerFriend',{requestId:requests.items[0]._id,accept:true},acceptId)]);
-  assert((await db.doc('users/host/friends/guest').get()).exists);assert((await db.doc('users/guest/friends/host').get()).exists);
+  assert(await contact('host','guest'));assert(await contact('guest','host'));
+  assert(!(await db.doc('friendRequests/'+requests.items[0]._id).get()).exists);
+  assert.deepEqual(notifications.wait('host','',signal).events.map(event=>event.kind),['friends']);
   const createId=rid(),params={mode:'FFA',target:31,difficulty:1,isPublic:false,password:'fixture-password'};
   await reject(call('host','createRoom',{...params,mode:'Teams'}),'invalid-argument');
   await reject(api('host',{op:'activeRoom',payload:{},protocolVersion:2}),'failed-precondition');
@@ -36,7 +47,9 @@ test('atomic profiles, social graph, invitations, room seats, server turns, retr
   await reject(call('guest','joinRoom',{code,password:'wrong'}),'permission-denied');
   await reject(call('third','invite',{roomId,toUid:'guest'}),'permission-denied');
   await call('host','invite',{roomId,toUid:'guest'});const invite=(await call('guest','invites')).items[0];assert.equal(invite.roomId,roomId);
+  assert.deepEqual(notifications.wait('guest','',signal).events.map(event=>event.kind),['requests','invites']);
   await call('guest','answerInvite',{inviteId:invite._id,accept:true});
+  assert(!(await db.doc('roomInvites/'+invite._id).get()).exists);
   const joins=await Promise.allSettled(['third','fourth','fifth'].map(uid=>call(uid,'joinRoom',{code,password:'fixture-password'})));
   assert.equal(joins.filter(x=>x.status==='fulfilled').length,2);
   let room=(await db.doc(`rooms/${roomId}`).get()).data();assert.equal(room.players.length,4);assert.equal(new Set(room.players.map(p=>p.index)).size,4);assert.equal(new Set(room.memberUids).size,4);
@@ -58,7 +71,7 @@ test('atomic profiles, social graph, invitations, room seats, server turns, retr
   await reject(call(actor,'move',move),'failed-precondition');
   await call('host','leave',{roomId});room=(await db.doc(`rooms/${roomId}`).get()).data();assert.notEqual(room.hostId,'host');assert.equal(room.status,'playing');
   now+=50000;const advanced=await call('guest','poll',{roomId});assert(advanced.view.revision>saved.revision,'server timeout advances even after host leaves');
-  await call('host','removeFriend',{toUid:'guest'});assert(!(await db.doc('users/host/friends/guest').get()).exists);assert(!(await db.doc('users/guest/friends/host').get()).exists);
+  await call('host','removeFriend',{toUid:'guest'});assert(!await contact('host','guest'));assert(!await contact('guest','host'));
   assert.equal((await call('guest','activeRoom')).roomId,roomId);
 });
 function jwt(uid){const n=Math.floor(Date.now()/1000),enc=x=>Buffer.from(JSON.stringify(x)).toString('base64url');return `${enc({alg:'none',typ:'JWT'})}.${enc({iss:'https://securetoken.google.com/demo-tarneeb-secure',aud:'demo-tarneeb-secure',iat:n,exp:n+3600,sub:uid,user_id:uid,firebase:{sign_in_provider:'custom',identities:{}}})}.`;}
@@ -201,10 +214,10 @@ test('profile visibility, last seen and cancelling requests preserve relationshi
   await call('profile-a','requestFriend',{toUid:'profile-c'});
   const racing=(await call('profile-c','requests')).items[0];
   await Promise.allSettled([call('profile-a','cancelFriend',{toUid:'profile-c'}),call('profile-c','answerFriend',{requestId:racing._id,accept:true})]);
-  const a=(await db.doc('users/profile-a/friends/profile-c').get()).exists;
-  const c=(await db.doc('users/profile-c/friends/profile-a').get()).exists;
+  const a=await contact('profile-a','profile-c');
+  const c=await contact('profile-c','profile-a');
   assert.equal(a,c);
-  assert.equal(a,(await db.doc('friendRequests/'+racing._id).get()).data().status==='accepted');
+  assert(!(await db.doc('friendRequests/'+racing._id).get()).exists);
   await call('profile-a','removeFriend',{toUid:'profile-b'});
   now+=60001;await call('profile-a','requestFriend',{toUid:'profile-b'});
   now+=7*24*3600000+1;
@@ -216,7 +229,7 @@ test('profile visibility, last seen and cancelling requests preserve relationshi
 test('public profiles hide private data and wallets remain server-owned',{skip:!enabled},async()=>{
   for(const uid of ['social-a','social-b'])await call(uid,'profile',{name:uid,age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
   await db.doc('users/social-b').set({email:'private@example.test',gold:999,points:999},{merge:true});
-  await db.doc('rankedStats/social-b').set({points:24,games:5,wins:2});
+  await db.doc('users/social-b').update({'economy.points':24,'economy.games':5,'economy.wins':2});
   let result=await call('social-a','publicProfile',{uid:'social-b'});
   assert.equal(result.relationship,'none');assert.equal(result.profile.points,24);
   assert.equal(result.profile.games,5);assert.equal(result.profile.wins,2);
@@ -232,12 +245,20 @@ test('public profiles hide private data and wallets remain server-owned',{skip:!
   assert.equal((await call('social-a','store')).gold,0);assert.equal((await call('social-a','store')).items.length,9);
   await reject(call('social-a','store',{uid:'social-b'}),'invalid-argument');
   await reject(call('social-a','profile',{gold:9999}),'invalid-argument');
-  await db.doc('wallets/social-a').update({gold:17});
+  await db.doc('users/social-a').update({economy:FieldValue.delete(),contacts:FieldValue.delete()});
+  await db.doc('wallets/social-a').set({gold:17,owned:['emerald']});
+  await db.doc('rankedStats/social-a').set({points:8,games:2,wins:1});
+  await db.doc('users/social-a/friends/social-b').set({uid:'social-b',name:'social-b'});
   await call('social-a','profile',{initialize:true});
   assert.equal((await call('social-a','store')).gold,17);
-  await db.doc('wallets/social-a').delete();
+  assert(!(await db.doc('wallets/social-a').get()).exists);
+  assert(!(await db.doc('rankedStats/social-a').get()).exists);
+  assert.equal((await call('social-a','store')).points,8);
+  assert.deepEqual((await call('social-a','store')).owned,['emerald']);
+  assert.equal((await call('social-a','friends')).items[0].uid,'social-b');
+  assert(!(await db.doc('users/social-a/friends/social-b').get()).exists);
   await Promise.all([call('social-a','profile',{initialize:true}),call('social-a','profile',{initialize:true})]);
-  assert.equal((await call('social-a','store')).gold,0);
+  assert.equal((await call('social-a','store')).gold,17);
 });
 
 test('concurrent polls share a read-only snapshot and room writes invalidate it',{skip:!enabled},async()=>{
@@ -304,7 +325,7 @@ test('cosmetic purchases are atomic, owned once, priced by server and equipped o
   await reject(call('shopper','profile',{frame:'royal'}),'invalid-argument');
   await reject(call('shopper','buyItem',{itemId:'emerald',price:0}),'invalid-argument');
   await reject(call('shopper','buyItem',{itemId:'unknown'}),'invalid-argument');
-  await db.doc('wallets/shopper').update({gold:300});
+  await db.doc('users/shopper').update({'economy.gold':300});
   const requestId=rid();
   await Promise.all([call('shopper','buyItem',{itemId:'emerald'},requestId),call('shopper','buyItem',{itemId:'emerald'},requestId),call('shopper','buyItem',{itemId:'emerald'})]);
   let store=await call('shopper','store');assert.equal(store.gold,200);assert.deepEqual(store.owned,['emerald']);
@@ -384,7 +405,7 @@ test('leaving the last seat removes the room, its secret and invitations immedia
 test('administrator gold credits are displayed, auditable and idempotent under retries',{skip:!enabled},async()=>{
   const uid='gold-credit-player';
   await call(uid,'profile',{name:'Gold player',age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
-  await db.doc(`wallets/${uid}`).update({gold:7});
+  await db.doc(`users/${uid}`).update({'economy.gold':7});
   const admin=createAdmin(db,{listUsers:async()=>({users:[{uid,metadata:{},disabled:false}]})},new Set(['owner']));
   const payload={uid,amount:40,requestId:rid()};
   await reject(admin('outsider','creditGold',payload),'permission-denied');
@@ -414,7 +435,7 @@ test('permanent deletion resumes safely and removes the Auth account and linked 
   await refs[2].set({points:3});
   await refs[5].set({note:'fixture'});
   await refs[6].set({uid:peer});
-  await refs[7].set({uid});
+  await db.doc(`users/${peer}`).update({contacts:[{uid}]});
   await refs[8].set({fromUid:uid,toUid:peer});
   await refs[9].set({fromUid:peer,toUid:uid});
   await refs[10].set({memberUids:[uid,peer]});
@@ -437,6 +458,7 @@ test('permanent deletion resumes safely and removes the Auth account and linked 
   const remaining=(await call(peer,'poll',{roomId:room._id})).room;
   assert.deepEqual(remaining.memberUids,[peer]);
   assert.equal(remaining.hostId,peer);
+  assert(!await contact(peer,uid));
   assert.deepEqual(await admin('owner','deleteUser',{uid,confirm:uid}),{state:'completed'});
 });
 

@@ -11,7 +11,7 @@ async function body(req){
   for await(const chunk of req){size+=chunk.length;if(size>8192)throw new AppError('invalid-argument','الطلب أكبر من المسموح');chunks.push(chunk);}
   try{const value=JSON.parse(Buffer.concat(chunks).toString('utf8'));if(!value||typeof value!=='object'||Array.isArray(value))throw Error();return value;}catch{throw new AppError('invalid-argument','JSON غير صالح');}
 }
-function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,projectId,production=true,webOrigins=[],maintenance}){
+function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,projectId,production=true,webOrigins=[],maintenance,notifications}){
   const authDomain=projectId?`${projectId}.firebaseapp.com`:'';
   const start=Date.now(),metrics={requests:0,errors:0,inFlight:0};let window=0,attempts=0;
   const files=new Map([['/admin',['index.html','text/html']],['/admin/app.js',['app.js','text/javascript']],['/admin/style.css',['style.css','text/css']]].map(([url,[file,type]])=>[url,{content:readFileSync(path.join(__dirname,'public',file)),type}]));
@@ -46,6 +46,7 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,project
     metrics.requests++;
     if(metrics.inFlight>=32){json(res,503,{error:{status:'UNAVAILABLE',message:'الخادم مشغول؛ أعد المحاولة'}});return;}
     metrics.inFlight++;
+    let holdingSlot=true;
     try{
       const minute=Math.floor(Date.now()/60000);if(window!==minute){window=minute;attempts=0;}
       if(++attempts>6000)throw new AppError('resource-exhausted','طلبات كثيرة');
@@ -77,6 +78,16 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,project
         const token=/^Bearer ([^\s]{1,7000})$/.exec(req.headers.authorization||'')?.[1];if(!token)throw new AppError('unauthenticated','سجل الدخول');
         let claims;try{claims=await auth.verifyIdToken(token,true);}catch{throw new AppError('unauthenticated','الجلسة غير صالحة أو الحساب محظور');}
         const input=await body(req);if(Object.keys(input).length!==1||!input.data)throw new AppError('invalid-argument','طلب غير صالح');
+        if(input.data.op==='listenNotifications'&&notifications){
+          const cursor=input.data.payload?.cursor;
+          if(input.data.protocolVersion!==VERSION||typeof cursor!=='string'||(cursor&&!/^[a-f0-9]{16}:\d{1,16}$/.test(cursor)))throw new AppError('invalid-argument','طلب تنبيهات غير صالح');
+          const controller=new AbortController();
+          res.once('close',()=>controller.abort());
+          metrics.inFlight--;holdingSlot=false;
+          const result=await notifications.wait(claims.uid,cursor,controller.signal);
+          if(!controller.signal.aborted)json(res,200,{result});
+          return;
+        }
         json(res,200,{result:await execute(claims.uid,input.data)});return;
       }
       throw new AppError('not-found','مسار غير موجود');
@@ -88,7 +99,7 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,project
       if(quota)res.setHeader('Retry-After','60');
       json(res,statusCodes[code]||503,{error:{status:code.replaceAll('-','_').toUpperCase(),message:known?err.message:quota?'بلغت قاعدة البيانات حد الاستخدام مؤقتًا؛ يمكنك اللعب دون اتصال':'الخدمة غير متاحة مؤقتًا؛ حاول مجددًا'}});
       if(!known)console.error(JSON.stringify({event:'request_failed',code:String(err.code||'internal').slice(0,80)}));
-    }finally{metrics.inFlight--;}
+    }finally{if(holdingSlot)metrics.inFlight--;}
   });
   server.requestTimeout=20000;server.headersTimeout=10000;server.keepAliveTimeout=5000;
   return server;

@@ -7,6 +7,7 @@ const {createMaintenance,INTERVAL_MS}=require('./maintenance');
 const {createAdmin}=require('./admin');
 const {createHttpServer}=require('./http');
 const {parseOrigin}=require('./config');
+const {createNotifications}=require('./notifications');
 const projectId=process.env.FIREBASE_PROJECT_ID,databaseId=process.env.FIRESTORE_DATABASE_ID;
 const production=process.env.NODE_ENV==='production';
 const missing=['FIREBASE_PROJECT_ID','FIRESTORE_DATABASE_ID','PUBLIC_ORIGIN','FIREBASE_WEB_API_KEY'].filter(key=>!process.env[key]?.trim());
@@ -17,9 +18,9 @@ if(production&&(process.env.FIRESTORE_EMULATOR_HOST||process.env.FIREBASE_AUTH_E
 const adminUids=new Set((process.env.ADMIN_UIDS||'').split(',').map(s=>s.trim()).filter(Boolean));
 if(!adminUids.size)throw Error('ADMIN_UIDS must contain at least one Firebase Authentication UID');
 initializeApp({credential:applicationDefault(),projectId});
-const db=getFirestore(databaseId),auth=getAuth(),execute=createService(db);
+const db=getFirestore(databaseId),auth=getAuth(),notifications=createNotifications(),execute=createService(db,Date.now,notifications);
 const maintenance=createMaintenance(db,auth,execute.invalidateRoom);
-const server=createHttpServer({auth,execute,admin:createAdmin(db,auth,adminUids,maintenance,execute.invalidateRoom),adminUids,origin,webOrigins,projectId,webApiKey:process.env.FIREBASE_WEB_API_KEY,production,maintenance});
+const server=createHttpServer({auth,execute,admin:createAdmin(db,auth,adminUids,maintenance,execute.invalidateRoom),adminUids,origin,webOrigins,projectId,webApiKey:process.env.FIREBASE_WEB_API_KEY,production,maintenance,notifications});
 const cleanup=setInterval(maintenance.run,INTERVAL_MS);
 cleanup.unref();
 server.listen(Number(process.env.PORT||10000),'0.0.0.0',()=>{

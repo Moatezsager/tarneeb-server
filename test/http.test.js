@@ -3,6 +3,7 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const {createHttpServer}=require('../http');
 const {createAdmin}=require('../admin');
+const {createNotifications}=require('../notifications');
 test('HTTP boundary verifies identity, revocation, admin cookies, origin and private errors',async t=>{
   let verified=0,executed=0;
   const auth={
@@ -10,7 +11,8 @@ test('HTTP boundary verifies identity, revocation, admin cookies, origin and pri
     async createSessionCookie(){return 'fixture-session';},
     async verifySessionCookie(cookie,revoked){assert.equal(revoked,true);assert.equal(cookie,'fixture-session');return {uid:'owner'};}
   };
-  const server=createHttpServer({auth,execute:async(uid,data)=>{executed++;if(data.fail)throw Error('private credential');if(data.quota)throw Object.assign(Error('internal quota details'),{code:8});return {uid};},admin:async()=>({items:[]}),adminUids:new Set(['owner']),origin:'https://fixture.invalid',webOrigins:['https://game.fixture.invalid'],webApiKey:'public-fixture',projectId:'demo-tarneeb'});
+  const notifications=createNotifications();
+  const server=createHttpServer({auth,notifications,execute:async(uid,data)=>{executed++;if(data.fail)throw Error('private credential');if(data.quota)throw Object.assign(Error('internal quota details'),{code:8});return {uid};},admin:async()=>({items:[]}),adminUids:new Set(['owner']),origin:'https://fixture.invalid',webOrigins:['https://game.fixture.invalid'],webApiKey:'public-fixture',projectId:'demo-tarneeb'});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
   const base=`http://127.0.0.1:${server.address().port}`;
@@ -45,6 +47,14 @@ test('HTTP boundary verifies identity, revocation, admin cookies, origin and pri
   const quota=await post('/online',{data:{quota:true}},{Authorization:'Bearer player'});
   assert.equal(quota.status,429);assert.equal(quota.headers.get('retry-after'),'60');
   assert.equal((await quota.json()).error.status,'QUOTA_EXHAUSTED');
+  const calls=executed;
+  notifications.publish('player',{kind:'requests',name:'Friend'});
+  const listen={data:{op:'listenNotifications',payload:{cursor:''},protocolVersion:3}};
+  const inbox=await post('/online',listen,{Authorization:'Bearer player'}).then(r=>r.json());
+  assert.equal(inbox.result.events[0].name,'Friend');
+  const outsider=await post('/online',listen,{Authorization:'Bearer stranger'}).then(r=>r.json());
+  assert.deepEqual(outsider.result.events,[]);
+  assert.equal(executed,calls,'waiting for notifications never calls the database service');
 });
 test('administrator service rejects outsiders and protects administrator accounts',async()=>{
   const admin=createAdmin({}, {}, new Set(['owner']));

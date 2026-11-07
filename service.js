@@ -1,10 +1,11 @@
 'use strict';
 const {randomBytes,randomInt,scryptSync,timingSafeEqual,createHash} = require('node:crypto');
-const {Timestamp,FieldValue} = require('firebase-admin/firestore');
+const {Timestamp} = require('firebase-admin/firestore');
 const {AppError:HttpsError} = require('./errors');
 const engine = require('./engine');
 const {completeProfile,validateProfileEdit}=require('./profile');
 const {removeMember,removeRoom}=require('./room-lifecycle');
+const {economy,saveEconomy,contacts,saveContacts,hasFriend,MAX_CONTACTS}=require('./account-data');
 const VERSION=3, HOUR=3600000;
 const CATALOG=[
   {id:'emerald',kind:'frame',name:'إطار الزمرد',price:100},
@@ -70,7 +71,7 @@ function reply(room,state,uid,now){
   if(state?.phase==='round_end'&&state.winner<0){view.ready_seats=readySeats(state,room);delete view.readyUids;}
   return {room:{...publicRoom(room),chat:room.chat||[]},view,serverTime:now};
 }
-function createService(db, clock=Date.now){
+function createService(db, clock=Date.now, notifications){
   // shortcut: single-instance memory limits reset on restart; share counters before scaling out.
   const rateLimits=new Map();
   // shortcut: five-second snapshots bound cross-instance staleness; use shared invalidation before scaling out.
@@ -101,15 +102,23 @@ function createService(db, clock=Date.now){
       result.view.hand=[];
       result.view.legal=[];
       result.view.available_bids=[];
+      const players=await tx.getAll(...r.players.map(p=>ref(`users/${p.uid}`)));
+      const accounts=await Promise.all(players.map(doc=>economy(tx,db,doc.id,doc.data()||{})));
       await removeRoom(tx,db,r._id,r.memberUids);
       tx.set(ref(`roomResults/${r._id}`),{memberUids:r.memberUids,room:result.room,view:result.view,expiresAt:r.expiresAt});
       // Award once in the same transaction as the terminal state; legacy profile points are not trusted.
-      for(const p of r.players){const won=p.index===state.winner;tx.set(ref(`rankedStats/${p.uid}`),{games:FieldValue.increment(1),wins:FieldValue.increment(won?1:0),points:FieldValue.increment(won?10:2),updatedAt:stamp(now)},{merge:true});if(r.players.length>=2&&p.status==='connected')tx.set(ref(`wallets/${p.uid}`),{gold:FieldValue.increment(won?20:5),updatedAt:stamp(now)},{merge:true});}
+      for(let i=0;i<players.length;i++){
+        const doc=players[i],p=r.players[i],account=accounts[i],won=p.index===state.winner;
+        if(!doc.exists||doc.data().deleting)continue;
+        account.value.games+=1;account.value.wins+=won?1:0;account.value.points+=won?10:2;
+        if(r.players.length>=2&&p.status==='connected')account.value.gold+=won?20:5;
+        saveEconomy(tx,doc.ref,account);
+      }
       return;
     }
     tx.set(ref(`rooms/${r._id}`),r);tx.set(ref(`roomSecrets/${r._id}`),{...secret,state:state?JSON.stringify(state):'',expiresAt:r.expiresAt});
   }
-  async function operate(tx,uid,op,d,now,pollDocs){
+  async function operate(tx,uid,op,d,now,pollDocs,notify){
     if(op==='presence'){
       keys(d,['online']);if(typeof d.online!=='boolean')fail('invalid-argument','حالة غير صالحة');await profile(tx,uid);
       tx.update(ref(`users/${uid}`),{status:d.online?'online':'offline',lastSeen:stamp(now),updatedAt:stamp(now)});return {status:'ok'};
@@ -119,10 +128,10 @@ function createService(db, clock=Date.now){
       const user=(await tx.get(ref(`users/${uid}`))).data();
       if(user?.deleting)fail('permission-denied','الحساب قيد الحذف');
       if(user?.uid!==uid||typeof user.profileComplete!=='boolean'||!/^[A-Z0-9-]{3,32}$/.test(user.searchId??''))fail('not-found','ملف اللاعب يحتاج تهيئة');
-      const [stats,wallet]=await tx.getAll(ref(`rankedStats/${uid}`),ref(`wallets/${uid}`));
-      if(!wallet.exists)fail('not-found','ملف اللاعب يحتاج تهيئة');
+      const account=await economy(tx,db,uid,user);
+      if(!user.economy)saveEconomy(tx,ref(`users/${uid}`),account);
       return {profile:{...safeProfile(user),age:user.age||0,showAge:user.showAge===true,
-        profileComplete:completeProfile(user),points:stats.data()?.points||0,gold:wallet.data()?.gold||0}};
+        profileComplete:completeProfile(user),points:account.value.points,gold:account.value.gold}};
     }
     if(op==='profile'){
       keys(d,['name','age','country','gender','avatar','initialize','complete','showAge']);
@@ -139,34 +148,43 @@ function createService(db, clock=Date.now){
       if(old.searchId===searchId&&!reservation.exists){const dup=await tx.get(db.collection('users').where('searchId','==',searchId).limit(2));if(dup.docs.some(x=>x.id!==uid))searchId=`${country}-${randomBytes(5).toString('hex').toUpperCase()}`;}
       if(reservation.exists&&reservation.data().uid!==uid)searchId=`${country}-${randomBytes(5).toString('hex').toUpperCase()}`;
       if(searchId!==old.searchId){reservation=await tx.get(ref(`searchIds/${searchId}`));if(reservation.exists&&reservation.data().uid!==uid)fail('aborted','أعد المحاولة لحجز المعرف');}
-      const [stats,wallet]=await tx.getAll(ref(`rankedStats/${uid}`),ref(`wallets/${uid}`));
+      const account=await economy(tx,db,uid,old);
       const age=d.initialize?(old.age||0):(d.age??old.age??0);
       const p={uid,name,age,showAge:d.initialize?old.showAge===true:(d.showAge??(old.showAge===true)),searchId,country,gender,avatar,...cosmetics(old),status:'online',lastSeen:stamp(now),updatedAt:stamp(now)};
       p.profileComplete=completeProfile(p);
       if(d.complete&&!p.profileComplete)fail('invalid-argument','أكمل الاسم والعمر والجنس والبلد والصورة أولًا');
-      tx.set(ref(`searchIds/${searchId}`),{uid,createdAt:stamp(now)});tx.set(ref(`users/${uid}`),p,{merge:true});
-      if(!wallet.exists)tx.create(ref(`wallets/${uid}`),{gold:0,createdAt:stamp(now)});
-      return {profile:{...safeProfile(p),age:p.age,showAge:p.showAge,profileComplete:p.profileComplete,points:stats.data()?.points||0,gold:wallet.data()?.gold||0}};
+      tx.set(ref(`searchIds/${searchId}`),{uid,createdAt:stamp(now)});
+      tx.set(doc.ref,{...p,...(!doc.exists?{contacts:[]}:{}),economy:account.value},{merge:true});
+      for(const legacy of account.legacy)tx.delete(legacy.ref);
+      return {profile:{...safeProfile(p),age:p.age,showAge:p.showAge,profileComplete:p.profileComplete,points:account.value.points,gold:account.value.gold}};
     }
     if(op==='publicProfile'){
       keys(d,['uid']);if(!id(d.uid))fail('invalid-argument','معرّف لاعب غير صالح');
-      const p=await profile(tx,d.uid);
-      const [stats,friend,sent,incoming]=await tx.getAll(ref(`rankedStats/${d.uid}`),ref(`users/${uid}/friends/${d.uid}`),ref(`friendRequests/${hash(`${uid}:${d.uid}`)}`),ref(`friendRequests/${hash(`${d.uid}:${uid}`)}`));
-      const hasIncoming=pendingRequest(incoming,now),hasSent=pendingRequest(sent,now);
-      return {profile:{...safeProfile(p),...(d.uid===uid?{age:p.age}:{}),lastSeenAt:p.lastSeen?.toMillis()||0,points:stats.data()?.points||0,games:stats.data()?.games||0,wins:stats.data()?.wins||0},relationship:d.uid===uid?'self':friend.exists?'friends':hasIncoming?'incoming':hasSent?'pending':'none',requestId:hasIncoming?hash(`${d.uid}:${uid}`):undefined};
+      const p=await profile(tx,d.uid),account=await economy(tx,db,d.uid,p);
+      let relationship='self',requestId;
+      if(d.uid!==uid){
+        const own=(await tx.get(ref(`users/${uid}`))).data()||{};
+        relationship=await hasFriend(tx,db,uid,own,d.uid)?'friends':'none';
+        if(relationship==='none'){
+          const incomingId=hash(`${d.uid}:${uid}`);
+          const [sent,incoming]=await tx.getAll(ref(`friendRequests/${hash(`${uid}:${d.uid}`)}`),ref(`friendRequests/${incomingId}`));
+          if(pendingRequest(incoming,now)){relationship='incoming';requestId=incomingId;}
+          else if(pendingRequest(sent,now))relationship='pending';
+        }
+      }
+      const {points,games,wins}=account.value;
+      return {profile:{...safeProfile(p),...(d.uid===uid?{age:p.age}:{}),lastSeenAt:p.lastSeen?.toMillis()||0,points,games,wins},relationship,requestId};
     }
     if(['store','buyItem','equipItem'].includes(op)){
       keys(d,op==='store'?[]:op==='equipItem'?['itemId','slot']:['itemId']);const p=await profile(tx,uid);
-      const walletRef=ref(`wallets/${uid}`);
-      const [snapshot,stats]=await tx.getAll(walletRef,ref(`rankedStats/${uid}`));
-      const wallet=snapshot.data()||{gold:0,owned:[]};wallet.owned=wallet.owned||[];
+      const account=await economy(tx,db,uid,p),wallet=account.value;
       if(op!=='store'){
         const item=CATALOG.find(item=>item.id===d.itemId);
         if(!item&&!(op==='equipItem'&&d.itemId===''))fail('invalid-argument','عنصر غير متاح');
         if(op==='buyItem'&&!wallet.owned.includes(item.id)){
           if(!Number.isSafeInteger(wallet.gold)||wallet.gold<item.price)fail('failed-precondition','رصيد الذهب غير كافٍ');
           wallet.gold-=item.price;wallet.owned.push(item.id);
-          tx.set(walletRef,{gold:wallet.gold,owned:wallet.owned,updatedAt:stamp(now)},{merge:true});
+          saveEconomy(tx,ref(`users/${uid}`),account);
         }
         if(op==='equipItem'){
           const slot=item?.kind??d.slot??'frame';
@@ -186,7 +204,7 @@ function createService(db, clock=Date.now){
           tx.update(ref(`users/${uid}`),{[slot]:p[slot],updatedAt:stamp(now)});
         }
       }
-      return {...storeView(wallet,p),points:stats.data()?.points||0};
+      return {...storeView(wallet,p),points:wallet.points};
     }
     if(op==='search'){
       keys(d,['searchId']);const searchId=str(d.searchId,3,32).toUpperCase();if(!/^[A-Z0-9-]+$/.test(searchId))fail('invalid-argument','معرّف غير صالح');
@@ -195,44 +213,74 @@ function createService(db, clock=Date.now){
       if(userId===uid)return {profile:null};const p=await tx.get(ref(`users/${userId}`));return {profile:p.exists&&!p.data().deleting?{...safeProfile(p.data()),uid:userId}:null};
     }
     if(op==='friends'||op==='requests'||op==='invites'){
-      keys(d,['cursor']);const collection=op==='friends'?db.collection(`users/${uid}/friends`):db.collection(op==='requests'?'friendRequests':'roomInvites');
+      keys(d,['cursor']);
+      if(d.cursor&&!id(d.cursor))fail('invalid-argument','صفحة غير صالحة');
+      if(op==='friends'){
+        const user=await profile(tx,uid),state=await contacts(tx,db,uid,user);
+        if(state){
+          if(!Array.isArray(user.contacts))saveContacts(tx,db,uid,state);
+          const page=state.items.filter(friend=>!d.cursor||friend.uid>d.cursor).sort((a,b)=>a.uid<b.uid?-1:1).slice(0,31);
+          return {items:page.slice(0,30).map(friend=>({...friend,_id:friend.uid})),cursor:page.length>30?page[29].uid:''};
+        }
+      }
+      const collection=op==='friends'?db.collection(`users/${uid}/friends`):db.collection(op==='requests'?'friendRequests':'roomInvites');
       let q=op==='friends'?collection:collection.where('toUid','==',uid).where('status','==','pending');q=q.orderBy('__name__');
-      if(d.cursor){if(!id(d.cursor))fail('invalid-argument','صفحة غير صالحة');q=q.startAfter(d.cursor);}const docs=await tx.get(q.limit(30));
+      if(d.cursor)q=q.startAfter(d.cursor);const docs=await tx.get(q.limit(30));
       let items=docs.docs.map(x=>({...x.data(),_id:x.id}));
       if(op==='friends'&&items.length){const profiles=await tx.getAll(...items.map(x=>ref(`users/${x.uid}`)));items=items.map((f,i)=>profiles[i].exists?{...safeProfile(profiles[i].data()),uid:f.uid,_id:f._id}:f);}
-      if(op==='requests' && items.length){ const profiles = await tx.getAll(...items.map(x => ref("users/" + x.fromUid))); items = items.map((r, i) => profiles[i].exists ? {...r, fromName: profiles[i].data().name || r.fromName, fromAvatar: profiles[i].data().avatar || r.fromAvatar, fromSearchId: profiles[i].data().searchId || "", fromCountry: profiles[i].data().country || "LY"} : r); }
+      if(op==='requests')items=items.filter(x=>x.createdAt?.toMillis()>now-7*24*HOUR&&(!x.expiresAt||x.expiresAt.toMillis()>now));
       if(op==='invites')items=items.filter(x=>x.expiresAt?.toMillis()>now);
       return {items:items.map(x=>({...x,createdAt:x.createdAt?.toMillis()||0,updatedAt:x.updatedAt?.toMillis()||0,expiresAt:x.expiresAt?.toMillis()||0})),cursor:docs.size===30?docs.docs.at(-1).id:''};
     }
     if(op==='requestFriend'){
       keys(d,['toUid']);if(!id(d.toUid)||d.toUid===uid)fail('invalid-argument','اختر لاعبًا آخر');
       const [me,to]=await Promise.all([profile(tx,uid),profile(tx,d.toUid)]),reqId=hash(`${uid}:${d.toUid}`);
-      const [friend,req,reverse]=await tx.getAll(ref(`users/${uid}/friends/${d.toUid}`),ref(`friendRequests/${reqId}`),ref(`friendRequests/${hash(`${d.toUid}:${uid}`)}`));
-      if(friend.exists)return {status:'friends'};if(pendingRequest(reverse,now))fail('already-exists','لديك طلب وارد من هذا اللاعب؛ اقبله من الطلبات');if(pendingRequest(req,now))return {status:'pending'};
+      if(await hasFriend(tx,db,uid,me,d.toUid))return {status:'friends'};
+      const [req,reverse]=await tx.getAll(ref(`friendRequests/${reqId}`),ref(`friendRequests/${hash(`${d.toUid}:${uid}`)}`));
+      if(pendingRequest(reverse,now))fail('already-exists','لديك طلب وارد من هذا اللاعب؛ اقبله من الطلبات');if(pendingRequest(req,now))return {status:'pending'};
       if(req.exists&&now-req.data().createdAt.toMillis()<60000)fail('resource-exhausted','انتظر قليلًا قبل إعادة إرسال الطلب');
-      tx.set(ref(`friendRequests/${reqId}`),{fromUid:uid,toUid:d.toUid,fromName:me.name,fromAvatar:me.avatar,toName:to.name,status:'pending',createdAt:stamp(now),expiresAt:stamp(now+7*24*HOUR)});return {status:'pending'};
+      tx.set(ref(`friendRequests/${reqId}`),{fromUid:uid,toUid:d.toUid,fromName:me.name,fromAvatar:me.avatar,fromSearchId:me.searchId,fromCountry:me.country,toName:to.name,status:'pending',createdAt:stamp(now),expiresAt:stamp(now+7*24*HOUR)});
+      notify(d.toUid,{kind:'requests',name:me.name});return {status:'pending'};
     }
     if(op==='answerFriend'){
       keys(d,['requestId','accept','fromUid']);const reqId=id(d.requestId)?d.requestId:(id(d.fromUid)?hash(`${d.fromUid}:${uid}`):null);if(!reqId||typeof d.accept!=='boolean')fail('invalid-argument','طلب غير صالح');const r=await tx.get(ref(`friendRequests/${reqId}`)),q=r.data();
       if(!q||q.toUid!==uid)fail('permission-denied','الطلب غير متاح');
       if(q.status!=='pending')return {status:q.status};if(q.fromUid===uid||!id(q.fromUid))fail('failed-precondition','طلب غير صالح');if(!q.createdAt?.toMillis||q.createdAt.toMillis()+7*24*HOUR<now||(q.expiresAt&&q.expiresAt.toMillis()<now))fail('failed-precondition','انتهت صلاحية الطلب');
       const [a,b]=await Promise.all([profile(tx,q.fromUid),profile(tx,uid)]);
-      tx.update(r.ref,{status:d.accept?'accepted':'rejected',updatedAt:stamp(now)});
-      if(d.accept){tx.set(ref(`users/${uid}/friends/${q.fromUid}`),{uid:q.fromUid,name:a.name,avatar:a.avatar,searchId:a.searchId,createdAt:stamp(now)});tx.set(ref(`users/${q.fromUid}/friends/${uid}`),{uid,name:b.name,avatar:b.avatar,searchId:b.searchId,createdAt:stamp(now)});}return {status:d.accept?'accepted':'rejected'};
+      tx.delete(r.ref);
+      if(d.accept){
+        for(const [own,other] of [[a,b],[b,a]]){
+          const entry={uid:other.uid,name:other.name,avatar:other.avatar,searchId:other.searchId||'',country:other.country||'',createdAt:now};
+          if(Array.isArray(own.contacts)){
+            const items=own.contacts.filter(friend=>friend.uid!==other.uid);
+            if(items.length>=MAX_CONTACTS)fail('resource-exhausted','قائمة الأصدقاء ممتلئة');
+            tx.update(ref(`users/${own.uid}`),{contacts:[...items,entry]});
+          }else tx.set(ref(`users/${own.uid}/friends/${other.uid}`),{...entry,createdAt:stamp(now)});
+        }
+        notify(q.fromUid,{kind:'friends',name:b.name});
+      }
+      return {status:d.accept?'accepted':'rejected'};
     }
     if(op==='cancelFriend'){
       keys(d,['toUid']);if(!id(d.toUid)||d.toUid===uid)fail('invalid-argument','مستخدم غير صالح');
       const request=ref(`friendRequests/${hash(`${uid}:${d.toUid}`)}`);
-      const [sent,friend]=await tx.getAll(request,ref(`users/${uid}/friends/${d.toUid}`));
-      if(friend.exists||sent.data()?.status==='accepted')fail('failed-precondition','تم قبول الطلب؛ حدّث البروفايل لإدارة الصداقة');
+      const own=await profile(tx,uid),sent=await tx.get(request);
+      if(await hasFriend(tx,db,uid,own,d.toUid)||sent.data()?.status==='accepted')fail('failed-precondition','تم قبول الطلب؛ حدّث البروفايل لإدارة الصداقة');
       if(!sent.exists||sent.data().status!=='pending')return {status:'cancelled'};
       if(sent.data().fromUid!==uid||sent.data().toUid!==d.toUid)fail('permission-denied','الطلب غير متاح');
-      tx.update(request,{status:'rejected',updatedAt:stamp(now)});return {status:'cancelled'};
+      tx.delete(request);notify(d.toUid,{kind:'requests'});return {status:'cancelled'};
     }
     if(op==='removeFriend'){
       keys(d,['toUid']);if(!id(d.toUid)||d.toUid===uid)fail('invalid-argument','مستخدم غير صالح');
       const ids=[hash(`${uid}:${d.toUid}`),hash(`${d.toUid}:${uid}`)];const requests=await tx.getAll(...ids.map(x=>ref(`friendRequests/${x}`)));
-      tx.delete(ref(`users/${uid}/friends/${d.toUid}`));tx.delete(ref(`users/${d.toUid}/friends/${uid}`));for(const r of requests)if(r.exists)tx.update(r.ref,{status:'rejected',updatedAt:stamp(now)});return {status:'removed'};
+      const users=await tx.getAll(ref(`users/${uid}`),ref(`users/${d.toUid}`));
+      for(const [i,other] of [[0,d.toUid],[1,uid]]){
+        const list=users[i].data()?.contacts;
+        if(Array.isArray(list)){
+          if(list.some(friend=>friend.uid===other))tx.update(users[i].ref,{contacts:list.filter(friend=>friend.uid!==other)});
+        }else tx.delete(ref(`users/${users[i].id}/friends/${other}`));
+      }
+      for(const r of requests)if(r.exists)tx.delete(r.ref);notify(d.toUid,{kind:'friends'});return {status:'removed'};
     }
     if(op==='listRooms'){
       keys(d,['cursor']);let q=db.collection('rooms').where('protocolVersion','==',VERSION).where('status','==','waiting').where('isPublic','==',true).orderBy('__name__');if(d.cursor){if(!id(d.cursor))fail('invalid-argument','صفحة غير صالحة');q=q.startAfter(d.cursor);}const rooms=await tx.get(q.limit(20));return {items:rooms.docs.filter(x=>x.data().expiresAt.toMillis()>now).map(x=>publicRoom(x.data())),cursor:rooms.size===20?rooms.docs.at(-1).id:''};
@@ -252,15 +300,19 @@ function createService(db, clock=Date.now){
     }
     if(op==='invite'){
       keys(d,['roomId','toUid']);if(!id(d.toUid)||d.toUid===uid)fail('invalid-argument','مستلم غير صالح');const [r]=await roomData(tx,d.roomId),me=await profile(tx,uid);await profile(tx,d.toUid);
-      const friend=await tx.get(ref(`users/${uid}/friends/${d.toUid}`));if(!r.memberUids.includes(uid)||r.status!=='waiting'||!friend.exists)fail('permission-denied','الدعوة متاحة لأصدقاء أعضاء غرفة الانتظار');
-      const inviteId=hash(`${d.roomId}:${uid}:${d.toUid}`);tx.set(ref(`roomInvites/${inviteId}`),{fromUid:uid,toUid:d.toUid,fromName:me.name,fromAvatar:me.avatar,roomId:d.roomId,roomCode:r.code,status:'pending',createdAt:stamp(now),expiresAt:stamp(now+10*60000)});return {status:'pending'};
+      if(!r.memberUids.includes(uid)||r.status!=='waiting'||!await hasFriend(tx,db,uid,me,d.toUid))fail('permission-denied','الدعوة متاحة لأصدقاء أعضاء غرفة الانتظار');
+      const inviteId=hash(`${d.roomId}:${uid}:${d.toUid}`);
+      const existing=await tx.get(ref(`roomInvites/${inviteId}`));
+      if(existing.data()?.status==='pending'&&existing.data().expiresAt?.toMillis()>now)return {status:'pending'};
+      tx.set(existing.ref,{fromUid:uid,toUid:d.toUid,fromName:me.name,fromAvatar:me.avatar,roomId:d.roomId,roomCode:r.code,status:'pending',createdAt:stamp(now),expiresAt:stamp(now+10*60000)});
+      notify(d.toUid,{kind:'invites',name:me.name});return {status:'pending'};
     }
     if(op==='joinRoom'||op==='answerInvite'){
       keys(d,op==='joinRoom'?['code','password']:['inviteId','accept']);let invitation=null;
       let roomId;
       if(op==='answerInvite'){
         if(!id(d.inviteId)||typeof d.accept!=='boolean')fail('invalid-argument','دعوة غير صالحة');const i=await tx.get(ref(`roomInvites/${d.inviteId}`));invitation=i.data();if(!invitation||invitation.toUid!==uid||invitation.status!=='pending'||invitation.expiresAt.toMillis()<=now)fail('failed-precondition','الدعوة غير متاحة أو انتهت');
-        if(!d.accept){tx.update(i.ref,{status:'rejected'});return {status:'rejected'};}roomId=invitation.roomId;
+        if(!d.accept){tx.delete(i.ref);return {status:'rejected'};}roomId=invitation.roomId;
       }else {const code=str(d.code,6,6).toUpperCase();if(!/^[A-Z2-9]{6}$/.test(code))fail('invalid-argument','رمز غير صالح');roomId=`v${VERSION}_${code}`;}
       const [r,secret,state]=await roomData(tx,roomId),me=await profile(tx,uid),active=await tx.get(ref(`activeRooms/${uid}`));
       if(r.status==='finished'||state?.winner>=0)fail('failed-precondition','انتهت المباراة');
@@ -272,7 +324,7 @@ function createService(db, clock=Date.now){
         if(!invitation&&secret.passwordHash){const password=str(d.password??'',0,64),attempt=passwordHash(password,secret.salt);if(!timingSafeEqual(Buffer.from(attempt,'hex'),Buffer.from(secret.passwordHash,'hex')))fail('permission-denied','رمز الغرفة أو كلمة المرور غير صحيحة');}
         const seat=[0,1,2,3].find(i=>!r.players.some(p=>p.index===i));r.players.push(player(me,seat));r.botSeats=(r.botSeats||[]).filter(i=>i!==seat);r.memberUids.push(uid);
       }
-      secret.presence[uid]=now;await saveRoom(tx,r,secret,state,now);tx.set(ref(`activeRooms/${uid}`),{roomId});if(invitation)tx.update(ref(`roomInvites/${d.inviteId}`),{status:'accepted'});return reply(r,state,uid,now);
+      secret.presence[uid]=now;await saveRoom(tx,r,secret,state,now);tx.set(ref(`activeRooms/${uid}`),{roomId});if(invitation)tx.delete(ref(`roomInvites/${d.inviteId}`));return reply(r,state,uid,now);
     }
     if(op==='chat'){
       keys(d,['roomId','text']);const text=str(d.text,1,160);
@@ -367,7 +419,9 @@ function createService(db, clock=Date.now){
       const result=await operate(null,uid,op,d,clock(),docs);
       if(result!==null)return result;
     }
+    let events=[];
     const result=await db.runTransaction(async tx=>{
+      events=[];
       const receipt=mutation?ref(`operations/${hash(`${uid}:${input.requestId}`)}`):null;
       const fingerprint=hash(JSON.stringify({op,d}));
       if(receipt){
@@ -375,12 +429,13 @@ function createService(db, clock=Date.now){
         if(deletion.exists)fail('permission-denied','الحساب قيد الحذف');
         if(previous.exists){if(previous.data().fingerprint!==fingerprint)fail('invalid-argument','معرّف عملية مستخدم');return JSON.parse(previous.data().result);}
       }
-      const result=await operate(tx,uid,op,d,clock());
+      const result=await operate(tx,uid,op,d,clock(),undefined,(recipient,event)=>events.push([recipient,event]));
       if(receipt)tx.create(receipt,{uid,fingerprint,result:JSON.stringify(result),expiresAt:stamp(now+24*HOUR)});
       return result;
-    },op==='ownProfile'?{readOnly:true}:undefined);
+    });
     if(mutation||op==='poll')pollCache.delete(result?.room?._id??d.roomId);
     if(op==='equipItem')pollCache.clear();
+    for(const [recipient,event] of events)notifications?.publish(recipient,event);
     return result;
   }
   execute.invalidateRoom=roomId=>pollCache.delete(roomId);

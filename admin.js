@@ -5,6 +5,7 @@ const {AppError}=require('./errors');
 const {VERSION}=require('./service');
 const {removeRoom}=require('./room-lifecycle');
 const {queueDeletion}=require('./account-deletion');
+const {economy,saveEconomy}=require('./account-data');
 const validId=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
 function createAdmin(db,auth,adminUids,maintenance,invalidateRoom){
   return async function admin(actor,action,data={}){
@@ -12,12 +13,15 @@ function createAdmin(db,auth,adminUids,maintenance,invalidateRoom){
     if(action==='users'){
       if(typeof data.cursor!=='string'||data.cursor.length>2000)throw new AppError('invalid-argument','صفحة غير صالحة');
       const page=await auth.listUsers(25,data.cursor||undefined);
-      const refs=page.users.flatMap(u=>['users','wallets','accountDeletions'].map(name=>db.doc(`${name}/${u.uid}`)));
+      const refs=page.users.flatMap(u=>['users','accountDeletions'].map(name=>db.doc(`${name}/${u.uid}`)));
       const docs=refs.length?await db.getAll(...refs):[];
+      const legacy=page.users.filter((_,i)=>!docs[i*2].data()?.economy);
+      const wallets=legacy.length?await db.getAll(...legacy.map(u=>db.doc(`wallets/${u.uid}`))):[];
+      const legacyGold=new Map(wallets.map(doc=>[doc.id,doc.data()?.gold||0]));
       return {items:page.users.map((u,index)=>{
-        const [profile,wallet,deletion]=docs.slice(index*3,index*3+3);
+        const [profile,deletion]=docs.slice(index*2,index*2+2);
         return {uid:u.uid,email:u.email||'',name:profile.data()?.name||u.displayName||'',disabled:u.disabled,
-          gold:wallet.data()?.gold||0,hasProfile:profile.exists,deleting:deletion.exists,protected:adminUids.has(u.uid),
+          gold:profile.data()?.economy?.gold??legacyGold.get(u.uid)??0,hasProfile:profile.exists,deleting:deletion.exists,protected:adminUids.has(u.uid),
           createdAt:u.metadata.creationTime,lastSignIn:u.metadata.lastSignInTime||''};
       }),cursor:page.pageToken||''};
     }
@@ -47,9 +51,9 @@ function createAdmin(db,auth,adminUids,maintenance,invalidateRoom){
       if(!validId(uid)||!Number.isSafeInteger(amount)||amount<1||amount>1000000||!validId(requestId)||requestId.length<16||
           Object.keys(data).some(k=>!['uid','amount','requestId'].includes(k)))throw new AppError('invalid-argument','أدخل كمية صحيحة من 1 إلى مليون ذهب');
       const key=createHash('sha256').update(`${actor}:${requestId}`).digest('hex');
-      const audit=db.doc(`adminAudit/${key}`),wallet=db.doc(`wallets/${uid}`);
+      const audit=db.doc(`adminAudit/${key}`);
       return db.runTransaction(async tx=>{
-        const [prior,balance,profile,deletion]=await tx.getAll(audit,wallet,db.doc(`users/${uid}`),db.doc(`accountDeletions/${uid}`));
+        const [prior,profile,deletion]=await tx.getAll(audit,db.doc(`users/${uid}`),db.doc(`accountDeletions/${uid}`));
         if(prior.exists){
           const entry=prior.data();
           if(entry.action!==action||entry.target!==uid||entry.amount!==amount)throw new AppError('invalid-argument','معرّف إجراء مستخدم');
@@ -57,10 +61,12 @@ function createAdmin(db,auth,adminUids,maintenance,invalidateRoom){
         }
         if(deletion.exists)throw new AppError('failed-precondition','الحساب قيد الحذف');
         if(!profile.exists)throw new AppError('not-found','ملف اللاعب غير موجود');
-        const before=balance.data()?.gold??0,after=before+amount;
+        const account=await economy(tx,db,uid,profile.data());
+        const before=account.value.gold,after=before+amount;
         if(!Number.isSafeInteger(before)||before<0||!Number.isSafeInteger(after))throw new AppError('failed-precondition','رصيد الحساب يحتاج مراجعة');
         const now=Timestamp.now();
-        tx.set(wallet,{gold:after,updatedAt:now},{merge:true});
+        account.value.gold=after;
+        saveEconomy(tx,profile.ref,account);
         tx.create(audit,{actor,action,target:uid,amount,before,after,state:'completed',createdAt:now});
         return {gold:after};
       });
