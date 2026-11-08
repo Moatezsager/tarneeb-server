@@ -26,11 +26,11 @@ function nextRound(s) {
   s.message=s.round===1?'الجولة الأولى • النقاط تبدأ من لمّتين':'الكنق يختار تبديل ورقته المكشوفة'; s.revision++;
 }
 function bids(s,p){
-  const score=s.scores[p],minimum=score>=41?5:score>=31?4:score>=21?3:0;
-  const others=s.bids.filter((_,i)=>i!==p), hasZero=others.includes(0);
+  const score=s.scores[p],scoreFloor=score>=41?5:score>=31?4:score>=21?3:0;
+  const others=s.bids.filter((_,i)=>i!==p);
   const total=others.reduce((n,b)=>n+Math.max(0,b),0);
-  return BIDS.filter(b=>b>=minimum
-    &&(p!==s.dealer||hasZero||b===0||(total+b>=11&&total+b!==13)));
+  const dealerFloor=p===s.dealer&&!others.includes(0)?11-total:0;
+  return BIDS.filter(b=>b>=Math.max(scoreFloor,dealerFloor));
 }
 function legal(s,p){
   if(!Number.isInteger(p)||p<0||p>3) return [];

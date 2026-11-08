@@ -42,8 +42,22 @@ test('zero is a real bid and lifts the total limit while score floors remain enf
   }
   assert.equal(e.act(s,3,'bid',0),false);
   assert(e.act(s,3,'bid',5));assert.equal(s.phase,'playing');
-  Object.assign(s,{phase:'bidding',current:3,bids:[2,2,2,-1],scores:[0,0,0,0]});
-  assert.deepEqual(e.bids(s,3),[0,5,8,9,10,11,12,13]);
+});
+test('dealer covers the gap to eleven without a ban on totals of thirteen',()=>{
+  const s=e.start(['a','b','c','d'],61);
+  Object.assign(s,{round:2,phase:'bidding',dealer:3,current:3,bids:[2,2,2,-1]});
+  assert.deepEqual(e.view(s,3).available_bids,[5,7,8,9,10,11,12,13]);
+  assert(!e.act(s,3,'bid',0));
+  assert(!e.act(s,3,'bid',4));
+  assert(e.act(s,3,'bid',7));
+  assert.equal(s.phase,'playing');
+  s.bids=[2,4,2,-1];
+  assert.deepEqual(e.bids(s,3),[3,4,5,7,8,9,10,11,12,13]);
+  s.scores[3]=41;
+  assert.equal(e.bids(s,3)[0],5);
+  s.scores[3]=0;
+  s.bids=[3,4,4,-1];
+  assert.equal(e.bids(s,3)[0],0);
 });
 test('successful 11–13 bids end the match on the deciding trick',()=>{
   for(const bid of [11,12,13]){
