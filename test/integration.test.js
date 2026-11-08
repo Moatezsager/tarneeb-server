@@ -242,7 +242,7 @@ test('public profiles hide private data and wallets remain server-owned',{skip:!
   assert.equal((await call('social-a','publicProfile',{uid:'social-b'})).relationship,'friends');
   assert.equal((await call('social-a','publicProfile',{uid:'social-a'})).relationship,'self');
   await reject(call('social-a','publicProfile',{uid:'../secret'}),'invalid-argument');
-  assert.equal((await call('social-a','store')).gold,0);assert.equal((await call('social-a','store')).items.length,9);
+  assert.equal((await call('social-a','store')).gold,0);assert.equal((await call('social-a','store')).items.length,13);
   await reject(call('social-a','store',{uid:'social-b'}),'invalid-argument');
   await reject(call('social-a','profile',{gold:9999}),'invalid-argument');
   await db.doc('users/social-a').update({economy:FieldValue.delete(),contacts:FieldValue.delete()});
@@ -317,6 +317,27 @@ test('room chat is member-only, bounded, idempotent and independent of game turn
   await reject(call('chatGuest','chat',{roomId,text:'left'}),'permission-denied');
 });
 
+
+test('premium frame prices, ownership and equipped room portrait use the same catalogue',{skip:!enabled},async()=>{
+  const uid='premium-shopper';
+  await call(uid,'profile',{name:'premium shopper',age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
+  const expected={phoenix_gold:1800,scarlet_court:2600,sovereign_laurel:3500,inferno_dragon:4200};
+  const catalogue=(await call(uid,'store')).items.filter(item=>Object.hasOwn(expected,item.id));
+  assert.deepEqual(Object.fromEntries(catalogue.map(item=>[item.id,item.price])),expected);
+  assert(catalogue.every(item=>item.kind==='frame'&&!item.url));
+  await reject(call(uid,'buyItem',{itemId:'inferno_dragon'}),'failed-precondition');
+  await reject(call(uid,'equipItem',{itemId:'inferno_dragon'}),'permission-denied');
+  await db.doc('users/'+uid).update({'economy.gold':4300});
+  await Promise.all([call(uid,'buyItem',{itemId:'inferno_dragon'}),call(uid,'buyItem',{itemId:'inferno_dragon'})]);
+  const store=await call(uid,'equipItem',{itemId:'inferno_dragon'});
+  assert.equal(store.gold,100);
+  assert.deepEqual(store.owned,['inferno_dragon']);
+  assert.equal(store.equipped,'inferno_dragon');
+  const profile=(await call(uid,'publicProfile',{uid})).profile;
+  assert.equal(profile.frame,'inferno_dragon');
+  const {room}=await call(uid,'createRoom',{mode:'FFA',target:31,difficulty:1,isPublic:true,password:''});
+  assert.equal(room.players[0].frame,'inferno_dragon');
+});
 
 test('cosmetic purchases are atomic, owned once, priced by server and equipped only by owner',{skip:!enabled},async()=>{
   await call('shopper','profile',{name:'shopper',age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
