@@ -21,6 +21,9 @@ const CATALOG=[
   {id:'comet',kind:'effect',name:'شرارة العنبر',price:120},
   {id:'orbit',kind:'effect',name:'مدار اللؤلؤ',price:220},
   {id:'pulse',kind:'effect',name:'نبض الياقوت',price:380},
+  {id:'aurora',kind:'effect',name:'شفق الزمرد',price:620},
+  {id:'royal_sweep',kind:'effect',name:'لمعة التاج',price:780},
+  {id:'ember_ring',kind:'effect',name:'جمر التنين',price:980},
 ];
 const validCosmetic=(value,kind)=>CATALOG.some(item=>item.id===value&&item.kind===kind)?value:'';
 const cosmetics=p=>({frame:validCosmetic(p.frame,'frame'),effect:validCosmetic(p.effect,'effect')});

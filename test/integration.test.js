@@ -242,7 +242,9 @@ test('public profiles hide private data and wallets remain server-owned',{skip:!
   assert.equal((await call('social-a','publicProfile',{uid:'social-b'})).relationship,'friends');
   assert.equal((await call('social-a','publicProfile',{uid:'social-a'})).relationship,'self');
   await reject(call('social-a','publicProfile',{uid:'../secret'}),'invalid-argument');
-  assert.equal((await call('social-a','store')).gold,0);assert.equal((await call('social-a','store')).items.length,13);
+  const catalog=await call('social-a','store');
+  assert.equal(catalog.gold,0);
+  assert(catalog.items.some(item=>item.id==='emerald'&&item.kind==='frame'));
   await reject(call('social-a','store',{uid:'social-b'}),'invalid-argument');
   await reject(call('social-a','profile',{gold:9999}),'invalid-argument');
   await db.doc('users/social-a').update({economy:FieldValue.delete(),contacts:FieldValue.delete()});
@@ -377,6 +379,19 @@ test('cosmetic purchases are atomic, owned once, priced by server and equipped o
   assert.equal(updated.players[0].effect,'');
   assert.equal(updated.status,'waiting');
   assert(updated.revision>room.revision);
+  const premiumEffects=[['aurora',620],['royal_sweep',780],['ember_ring',980]];
+  for(const [itemId,price] of premiumEffects){
+    assert.equal(store.items.find(item=>item.id===itemId)?.price,price);
+    await reject(call('shopper','equipItem',{itemId}),'permission-denied');
+  }
+  await db.doc('users/shopper').update({'economy.gold':2380});
+  for(const [itemId] of premiumEffects){
+    await call('shopper','buyItem',{itemId});
+    store=await call('shopper','equipItem',{itemId});
+    assert.equal(store.equippedEffect,itemId);
+  }
+  assert.equal(store.gold,0);
+  assert.equal((await call('shopper','poll',{roomId:room._id})).room.players[0].effect,'ember_ring');
 });
 
 test('gold rewards are awarded once at completed match and excluded from solo bot rooms',{skip:!enabled},async()=>{
