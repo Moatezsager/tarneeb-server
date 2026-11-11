@@ -85,7 +85,8 @@ test('bots can spoil nil, block the leader and manage the queen from public info
   Object.assign(s,{round:2,phase:'playing',lead:0,current:3,bids:[0,2,2,3],taken:[0,0,0,0],
     trick:[21,16,17,-1],exposed:[-1,-1,-1,-1],hands:[[],[],[],[13,25]]});
   assert.equal(e.ai(s,3).value,13);
-  s.scores[0]=55;assert.equal(e.ai(s,3).value,25);
+  s.scores[0]=55;assert.equal(e.ai(s,3).value,13,'give the nil-bidding leader a trick to break their contract');
+  s.bids[0]=5;assert.equal(e.ai(s,3).value,25,'deny a trick when the leader needs a positive bid');
   s.scores[0]=0;s.trick=[23,10,17,-1];s.hands[3]=[12,0];
   assert.equal(e.ai(s,3).value,12);
   s.trick=[23,1,17,-1];assert.equal(e.ai(s,3).value,0);

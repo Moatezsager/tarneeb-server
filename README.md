@@ -1,5 +1,11 @@
 # Tarneeb server
 
+## Bot strategy
+
+The Godot and server bots share the same public-information strategy: estimate remaining suits, protect their own contract, deny the leading scorer's positive bid or spoil their nil, conserve trumps when a lower scorer already blocks the leader, and retain the hearts ace to trap the queen. They use no opponent hands or private coordination. Match-ending bids take priority over temporary cooperation. Gameplay rules and protocol 3 are unchanged.
+
+`test/bot-strategy.test.js` checks 17 tactical positions recorded by Godot, rotates them through all four seats and rejects hidden-hand reads or state mutations. Regenerate `test/fixtures/bot-strategy.json` with the sibling client's `tests/bot_strategy_test.gd`, and `rules-parity.json` with `tests/export_rules_parity.gd`, both in `TARNEEB_TEST_MODE=1`. Run `npm test` after copying their outputs from the client's `tests/artifacts/`. Publish the matching Godot web export for local browser bots; online bots run this server's engine.
+
 خادم مستقل للعبة طرنيب: Node.js 22 وFirebase Admin SDK، يعمل على Render Free دون Cloud Functions أو ترقية Firebase إلى Blaze. يشمل منطق اللعب والملفات الشخصية والأصدقاء والدعوات والغرف ولوحة إدارة عربية.
 
 ## التشغيل والاختبار

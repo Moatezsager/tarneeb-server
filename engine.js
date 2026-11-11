@@ -190,14 +190,15 @@ function playValue(s,p,card,winner,leader,hand,info){
     const masters=info.outstanding.filter(c=>suit(c)===suit(card)&&beats(c,card)).length;
     if(masters===0&&card!==ACE)value+=needsTricks?14*survival:0;
     if(suit(card)===0&&hearts<=2&&masters>0)value-=12;
-    if(suit(card)===0&&hearts>=3&&hand.includes(ACE)&&queenLive&&card!==ACE&&!nil)value+=24;
+    if(s.round>1&&suit(card)===0&&hearts>=3&&hand.includes(ACE)&&queenLive&&card!==ACE&&!nil)value+=24;
     if(suit(card)===0&&hearts>=4&&masters===0&&needsTricks)value+=12;
   }
   if(s.round>1&&card===ACE&&!s.played.includes(QUEEN)&&!hand.includes(QUEEN)){
     const queenOwner=s.exposed.indexOf(QUEEN);
-    const forced=queenLive&&((suit(lead)===0&&info.outstanding.filter(c=>suit(c)===0&&c!==QUEEN).length===0)||
+    const queenAhead=queenOwner>=0?s.trick[queenOwner]<0:winner<0;
+    const forced=queenLive&&((queenAhead&&suit(lead)===0&&info.outstanding.filter(c=>suit(c)===0&&c!==QUEEN).length===0)||
       (queenOwner>=0&&s.trick[queenOwner]<0&&info.counts[queenOwner]===1));
-    value+=s.trick.includes(QUEEN)||forced?(nil?120:260):remaining<=Math.max(2,s.bids[p]-s.taken[p])?0:-42;
+    value+=s.trick.includes(QUEEN)||forced?(nil?120:260):remaining<=Math.max(2,s.bids[p]-s.taken[p])?0:-55;
   }
   if(s.round>1&&card===QUEEN){
     if(s.trick.includes(ACE))value-=300;
