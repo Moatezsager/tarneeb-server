@@ -113,7 +113,8 @@ function publicKnowledge(s,p){
     for(let seat=0;seat<4;seat++)if(s.trick[seat]>=0&&suit(s.trick[seat])!==led)voids[seat][led]=true;
   }
   const known=new Set([...s.hands[p],...s.played,...s.trick,...s.exposed]);
-  return {voids,counts,unseen:Array.from({length:52},(_,i)=>i).filter(c=>!known.has(c))};
+  const unseen=Array.from({length:52},(_,i)=>i).filter(c=>!known.has(c));
+  return {voids,counts,unseen,outstanding:[...unseen,...s.exposed.filter((c,seat)=>seat!==p&&c>=0)]};
 }
 function noneOf(total,matches,draws){
   let probability=1;
@@ -153,35 +154,51 @@ function bidEstimate(hand,difficulty){
   }
   return estimate+Math.max(0,hearts-3)*0.6+(difficulty===2?0.2:difficulty===0?-0.4:0);
 }
+function trickValue(s,p,seat,leader){
+  if(s.round===1)return seat===p?(s.taken[p]===1?50:24):seat===leader?-60:-4;
+  const bid=s.bids[seat],need=bid-s.taken[seat],remaining=13-s.tricks;
+  if(bid===0&&s.taken[seat]===0)return seat===p?-260:seat===leader?160:80;
+  if(need<=0||need>remaining)return seat===p?2:0;
+  if(bid>=11&&need===1)return seat===p?500:-500;
+  if(seat===p)return 30+60*need/remaining+(need===1?30:0);
+  return -(need===1?35:8)-(bid>=7?20:0)-(seat===leader?100:0);
+}
 function playValue(s,p,card,winner,leader,hand,info){
   const wins=winner<0||beats(card,s.trick[winner]);
   let next=wins?p:winner, best=wins?card:s.trick[winner];
   const lead=winner<0?card:s.trick[s.lead];
-  let survival=1,leaderThreat=0;
+  let survival=1,expected=trickValue(s,p,next,leader);
+  // shortcut: independent reply estimates, use joint search only if measured play warrants its cost.
   for(let seat=(p+1)%4;seat!==s.lead;seat=(seat+1)%4){
     const threat=overtake(s,seat,best,suit(lead),info);
     survival*=1-threat;
-    if(seat===leader)leaderThreat=threat;
+    expected=expected*(1-threat)+trickValue(s,p,seat,leader)*threat;
   }
   const nil=s.bids[p]===0&&s.taken[p]===0;
   const needsTricks=s.round===1||s.taken[p]<s.bids[p];
-  let value=-strength(card)/20;
+  let value=expected-strength(card)/20;
   const remaining=13-s.tricks;
-  const urgency=needsTricks?Math.min(1,(s.bids[p]-s.taken[p])/Math.max(1,remaining)):0;
-  if(next===p)value+=(nil?-240:needsTricks?24+24*urgency:4)*survival;
-  else if(s.round>1&&s.bids[next]===0&&s.taken[next]===0)value+=80;
-  else if(s.bids[next]>=7&&s.taken[next]<s.bids[next])value-=40;
-  else if(s.bids[next]>0&&s.taken[next]<s.bids[next])value-=8;
-  if(next===leader&&leader!==p)value-=125*survival;
-  if(leader!==p)value-=70*leaderThreat;
-  if(winner<0){
-    const masters=info.unseen.filter(c=>suit(c)===suit(card)&&beats(c,card)).length;
-    if(masters===0&&card!==ACE)value+=needsTricks?14:0;
-    if(suit(card)===0&&hand.filter(c=>suit(c)===0).length<=2&&masters>0)value-=12;
-    if(leader>=0&&info.voids[leader][suit(card)]&&suit(card)!==0)value-=18;
+  const hearts=hand.filter(c=>suit(c)===0).length;
+  const queenLive=!s.played.includes(QUEEN)&&!hand.includes(QUEEN)&&!s.trick.includes(QUEEN);
+  // Save trumps when another player already denies the leader, but spend them to secure a contract.
+  if(winner>=0&&suit(lead)!==0&&suit(card)===0&&card!==QUEEN)value-=10+rank(card)/2;
+  if(!wins&&suit(card)!==0){
+    value+=rank(card)/4;
+    if(suit(card)!==suit(lead)&&hand.filter(c=>suit(c)===suit(card)).length===1)value+=6;
   }
-  if(s.round>1&&card===ACE&&!s.played.includes(QUEEN)&&!hand.includes(QUEEN))
-    value+=s.trick.includes(QUEEN)?(nil?120:260):remaining<=Math.max(2,s.bids[p]-s.taken[p])?0:-42;
+  if(winner<0){
+    const masters=info.outstanding.filter(c=>suit(c)===suit(card)&&beats(c,card)).length;
+    if(masters===0&&card!==ACE)value+=needsTricks?14*survival:0;
+    if(suit(card)===0&&hearts<=2&&masters>0)value-=12;
+    if(suit(card)===0&&hearts>=3&&hand.includes(ACE)&&queenLive&&card!==ACE&&!nil)value+=24;
+    if(suit(card)===0&&hearts>=4&&masters===0&&needsTricks)value+=12;
+  }
+  if(s.round>1&&card===ACE&&!s.played.includes(QUEEN)&&!hand.includes(QUEEN)){
+    const queenOwner=s.exposed.indexOf(QUEEN);
+    const forced=queenLive&&((suit(lead)===0&&info.outstanding.filter(c=>suit(c)===0&&c!==QUEEN).length===0)||
+      (queenOwner>=0&&s.trick[queenOwner]<0&&info.counts[queenOwner]===1));
+    value+=s.trick.includes(QUEEN)||forced?(nil?120:260):remaining<=Math.max(2,s.bids[p]-s.taken[p])?0:-42;
+  }
   if(s.round>1&&card===QUEEN){
     if(s.trick.includes(ACE))value-=300;
     else if(s.played.includes(ACE)||hand.includes(ACE)||(p+1)%4===s.lead)value+=72;
@@ -189,8 +206,8 @@ function playValue(s,p,card,winner,leader,hand,info){
       const aceOwner=s.exposed.indexOf(ACE);
       let risk=0;
       for(let seat=(p+1)%4;seat!==s.lead;seat=(seat+1)%4){
-        if(seat===aceOwner)risk=1;
-        else if(aceOwner<0)risk+=info.counts[seat]/Math.max(1,info.unseen.length);
+        if(seat===aceOwner)risk=overtake(s,seat,QUEEN,suit(lead),info);
+        else if(aceOwner<0&&!(s.exposed[seat]>=0&&suit(lead)!==0&&suit(s.exposed[seat])===suit(lead)))risk+=info.counts[seat]/Math.max(1,info.unseen.length);
       }
       value+=18-100*Math.min(1,risk);
     }
