@@ -2,6 +2,17 @@ const {test}=require('node:test');
 const assert=require('node:assert/strict');
 const e=require('../engine');
 const {advance,reply}=require('../service');
+
+test('multiple players reaching the target extend the shoot by ten repeatedly',()=>{
+  const s=e.start(['a','b','c','d'],31);
+  for(const [scores,target] of [[[28,30,0,0],41],[[38,40,0,0],51]]){
+    Object.assign(s,{round:2,phase:'collecting',scores,tricks:12,bids:[3,3,2,2],taken:[2,3,0,0],trick:[25,24,23,22],lead:0});
+    assert(e.collect(s));
+    assert.equal(s.target,target);
+    assert.equal(s.winner,-1);
+    assert.equal(s.phase,'round_end');
+  }
+});
 test('server plays complete individual matches without losing or duplicating cards',()=>{
   for(let run=0;run<20;run++){
     const s=e.start(['a','b','c','d'],31,run%3);
@@ -84,6 +95,63 @@ test('bots can spoil nil, block the leader and manage the queen from public info
   s.hands[3]=[10,26];assert.equal(e.ai(s,3).value,26);
   s.trick=[23,1,17,-1];assert.equal(e.ai(s,3).value,10);
   s.hands[0]=[12,50];assert.equal(e.ai(s,3).value,10,'hidden rival cards cannot change the choice');
+});
+
+test('professional bot decisions never read another hand, even when swapping or bidding',()=>{
+  const s=e.start(['a','b','c','d'],61,2);
+  for(let step=0;step<700;step++){
+    if(s.winner>=0)break;
+    if(s.phase==='collecting'){e.collect(s);continue;}
+    if(s.phase==='round_end'){e.nextRound(s);continue;}
+    const p=s.current,expected=e.ai(s,p),hands=s.hands;
+    s.hands=new Proxy(hands,{
+      get(target,key){
+        if(/^[0-3]$/.test(String(key)))assert.equal(Number(key),p,'opponent hand was inspected');
+        return Reflect.get(target,key);
+      }
+    });
+    assert.deepEqual(e.ai(s,p),expected);
+    s.hands=hands;
+    assert(e.act(s,p,expected.action,expected.value));
+  }
+});
+
+test('public void inference and probability respect actual cards already shown',()=>{
+  const s=e.start(['a','b','c','d'],61,2);
+  Object.assign(s,{round:2,phase:'playing',dealer:3,lead:0,current:0,
+    scores:[0,29,0,0],bids:[2,3,2,3],taken:[0,1,0,0],tricks:1,
+    played:[13,0,14,15],trick:[-1,-1,-1,-1],exposed:[-1,12,-1,-1]});
+  s.hands[0]=[25,38];
+  assert.equal(e.ai(s,0).value,38,'avoid the suit the leading player has shown they can trump');
+  Object.assign(s,{played:[],tricks:0,lead:0,current:3,trick:[39,40,41,-1],exposed:[-1,-1,-1,-1],hands:[[],[],[],[10,26]]});
+  assert.equal(e.ai(s,3).value,10,'discard the queen when acting last with no ace in the trick');
+  s.trick[1]=12;
+  assert.equal(e.ai(s,3).value,26,'do not discard the queen onto the ace when a legal escape exists');
+});
+
+test('the king sees only the exposed card until the swap presentation closes',()=>{
+  const s=e.start(['a','b','c','d'],61,2);
+  e.nextRound(s);
+  const king=s.king,room={players:[{uid:'king',index:king,status:'connected'}],createdAt:{toMillis:()=>0},updatedAt:{toMillis:()=>0},expiresAt:{toMillis:()=>10000}};
+  for(const presentation of ['reveal','']){
+    s.presentation=presentation;
+    const v=reply(room,s,'king',0).view;
+    assert.equal(v.hand_concealed,true);
+    assert.deepEqual(v.hand,[s.exposed[king]]);
+    assert.equal(v.hand_counts[king],13);
+  }
+  const before=e.ai(s,king);
+  const hand=s.hands[king];
+  s.hands[king]=new Proxy(hand,{get(){throw new Error('king inspected the hidden hand');}});
+  assert.deepEqual(e.ai(s,king),before);
+  s.hands[king]=hand;
+  assert(e.act(s,king,'swap',-1));
+  s.presentation='swap_result';
+  assert.deepEqual(e.view(s,king).hand,[s.exposed[king]]);
+  assert.equal(e.view(s,(king+1)%4).hand.length,13,'other players retain their own hands');
+  s.presentation='';
+  assert.deepEqual(e.view(s,king).hand,hand);
+  assert.equal(e.view(s,king).hand_concealed,false);
 });
 test('private view contains only its hand; presentation ending changes the wire revision',()=>{
   const s=e.start(['a','b','c','d'],61);s.presentation='reveal';s.presentationUntil=4500;s.turnDueAt=4500;

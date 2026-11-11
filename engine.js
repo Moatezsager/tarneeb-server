@@ -77,8 +77,10 @@ function finish(s,instant=-1){
     s.scores[p]+=change;s.results.push({player:p,bid:s.bids[p],taken:s.taken[p],change,score:s.scores[p]});
   }
   s.history.push({round:s.round,results:clone(s.results)});s.history=s.history.slice(-30);
-  s.winner=instant>=0?instant:matchWinner(s);
-  s.message=instant>=0?`${s.names[instant]} حسم المباراة بطلب ${s.bids[instant]}`:s.winner>=0?'انتهت المباراة':'اكتملت الجولة • راجع النتائج';
+  const extended=instant<0&&s.scores.filter(score=>score>=s.target).length>1;
+  if(extended)s.target+=10;
+  s.winner=instant>=0?instant:extended?-1:matchWinner(s);
+  s.message=extended?`دخلوا في الشوط • الهدف الجديد ${s.target}`:instant>=0?`${s.names[instant]} حسم المباراة بطلب ${s.bids[instant]}`:s.winner>=0?'انتهت المباراة':'اكتملت الجولة • راجع النتائج';
 }
 function collect(s){
   if(s.phase!=='collecting')return false;
@@ -91,44 +93,146 @@ function collect(s){
 }
 const strength=c=>rank(c)+(suit(c)===0?20:0);
 const swapValue=c=>c===QUEEN?-50:strength(c);
-function playValue(s,p,card,winner,leader,hand){
+function publicKnowledge(s,p){
+  const voids=Array.from({length:4},()=>[false,false,false,false]);
+  const counts=[13,13,13,13];
+  let lead=(s.dealer+1)%4;
+  for(let i=0;i+3<s.played.length;i+=4){
+    let winner=lead;
+    const led=suit(s.played[i+lead]);
+    for(let seat=0;seat<4;seat++){
+      const card=s.played[i+seat];
+      counts[seat]--;
+      if(suit(card)!==led)voids[seat][led]=true;
+      if(beats(card,s.played[i+winner]))winner=seat;
+    }
+    lead=winner;
+  }
+  if(s.trick[s.lead]>=0){
+    const led=suit(s.trick[s.lead]);
+    for(let seat=0;seat<4;seat++)if(s.trick[seat]>=0&&suit(s.trick[seat])!==led)voids[seat][led]=true;
+  }
+  const known=new Set([...s.hands[p],...s.played,...s.trick,...s.exposed]);
+  return {voids,counts,unseen:Array.from({length:52},(_,i)=>i).filter(c=>!known.has(c))};
+}
+function noneOf(total,matches,draws){
+  let probability=1;
+  for(let i=0;i<Math.min(draws,total);i++)probability*=Math.max(0,total-matches-i)/(total-i);
+  return probability;
+}
+function overtake(s,seat,card,led,info){
+  const exposed=s.exposed[seat];
+  const pool=info.unseen.filter(c=>!info.voids[seat][suit(c)]);
+  const draws=Math.max(0,info.counts[seat]-(s.trick[seat]>=0?1:0)-(exposed>=0?1:0));
+  const higher=pool.filter(c=>suit(c)===led&&beats(c,card)).length;
+  const follows=exposed>=0&&suit(exposed)===led;
+  const knownHigher=follows&&beats(exposed,card);
+  const noSuit=info.voids[seat][led]?1:follows?0:noneOf(pool.length,pool.filter(c=>suit(c)===led).length,draws);
+  const trumpCount=pool.filter(c=>suit(c)===0&&beats(c,card)).length;
+  const knownTrump=exposed>=0&&suit(exposed)===0&&beats(exposed,card);
+  const higherChance=knownHigher?1:1-noneOf(pool.length,higher,draws);
+  const trumpChance=knownTrump?1:1-noneOf(pool.length,trumpCount,draws);
+  return Math.min(1,higherChance+(led===0?0:noSuit*trumpChance));
+}
+function bidEstimate(hand,difficulty){
+  let estimate=0;
+  const hearts=hand.filter(c=>suit(c)===0).length;
+  for(let type=0;type<4;type++){
+    const cards=hand.filter(c=>suit(c)===type);
+    const hasAce=cards.some(c=>rank(c)===14);
+    for(const card of cards){
+      const r=rank(card);
+      if(type===0){
+        if(r===14)estimate+=1;
+        else if(r===13)estimate+=hasAce?0.9:0.65;
+        else if(r>=11)estimate+=0.45;
+      }else if(r===14)estimate+=0.85;
+      else if(r===13)estimate+=hasAce?0.65:cards.length>1?0.3:0.1;
+    }
+    if(type!==0&&cards.length===0&&hearts>=3)estimate+=0.4;
+  }
+  return estimate+Math.max(0,hearts-3)*0.6+(difficulty===2?0.2:difficulty===0?-0.4:0);
+}
+function playValue(s,p,card,winner,leader,hand,info){
   const wins=winner<0||beats(card,s.trick[winner]);
   let next=wins?p:winner, best=wins?card:s.trick[winner];
   const lead=winner<0?card:s.trick[s.lead];
-  // A revealed card in the led suit is a possible reply. Never inspect a rival hand.
+  let survival=1,leaderThreat=0;
   for(let seat=(p+1)%4;seat!==s.lead;seat=(seat+1)%4){
-    const exposed=s.exposed[seat];
-    if(exposed>=0&&suit(exposed)===suit(lead)&&beats(exposed,best)){next=seat;best=exposed;}
+    const threat=overtake(s,seat,best,suit(lead),info);
+    survival*=1-threat;
+    if(seat===leader)leaderThreat=threat;
   }
   const nil=s.bids[p]===0&&s.taken[p]===0;
   const needsTricks=s.round===1||s.taken[p]<s.bids[p];
   let value=-strength(card)/20;
-  if(next===p)value+=nil?-240:needsTricks?24:6;
+  const remaining=13-s.tricks;
+  const urgency=needsTricks?Math.min(1,(s.bids[p]-s.taken[p])/Math.max(1,remaining)):0;
+  if(next===p)value+=(nil?-240:needsTricks?24+24*urgency:4)*survival;
   else if(s.round>1&&s.bids[next]===0&&s.taken[next]===0)value+=80;
   else if(s.bids[next]>=7&&s.taken[next]<s.bids[next])value-=40;
   else if(s.bids[next]>0&&s.taken[next]<s.bids[next])value-=8;
-  if(next===leader&&leader!==p)value-=125;
+  if(next===leader&&leader!==p)value-=125*survival;
+  if(leader!==p)value-=70*leaderThreat;
+  if(winner<0){
+    const masters=info.unseen.filter(c=>suit(c)===suit(card)&&beats(c,card)).length;
+    if(masters===0&&card!==ACE)value+=needsTricks?14:0;
+    if(suit(card)===0&&hand.filter(c=>suit(c)===0).length<=2&&masters>0)value-=12;
+    if(leader>=0&&info.voids[leader][suit(card)]&&suit(card)!==0)value-=18;
+  }
   if(s.round>1&&card===ACE&&!s.played.includes(QUEEN)&&!hand.includes(QUEEN))
-    value+=s.trick.includes(QUEEN)?(nil?120:260):-55;
+    value+=s.trick.includes(QUEEN)?(nil?120:260):remaining<=Math.max(2,s.bids[p]-s.taken[p])?0:-42;
   if(s.round>1&&card===QUEEN){
     if(s.trick.includes(ACE))value-=300;
     else if(s.played.includes(ACE)||hand.includes(ACE)||(p+1)%4===s.lead)value+=72;
-    else value+=10;
+    else {
+      const aceOwner=s.exposed.indexOf(ACE);
+      let risk=0;
+      for(let seat=(p+1)%4;seat!==s.lead;seat=(seat+1)%4){
+        if(seat===aceOwner)risk=1;
+        else if(aceOwner<0)risk+=info.counts[seat]/Math.max(1,info.unseen.length);
+      }
+      value+=18-100*Math.min(1,risk);
+    }
   }
   return value;
 }
 function ai(s,p){
-  if(s.phase==='swapping'){let best=-1,v=swapValue(s.exposed[p]);for(let i=0;i<4;i++)if(i!==p&&swapValue(s.exposed[i])>v){best=i;v=swapValue(s.exposed[i]);}return {action:'swap',value:best};}
-  if(s.phase==='bidding'){let estimate=0;const hearts=s.hands[p].filter(c=>suit(c)===0).length;for(const c of s.hands[p])estimate+=rank(c)===14?1.2:rank(c)===13?0.7:suit(c)===0&&rank(c)>=11?0.6:0;estimate+=Math.max(0,hearts-3)*0.8+(s.difficulty-1)*0.7;return {action:'bid',value:bids(s,p).reduce((a,b)=>Math.abs(b-estimate)<Math.abs(a-estimate)?b:a)};}
+  if(s.phase==='swapping'){
+    let best=-1,value=swapValue(s.exposed[p]);
+    for(let seat=0;seat<4;seat++){
+      if(seat===p||s.exposed[seat]<0)continue;
+      const estimate=swapValue(s.exposed[seat]);
+      if(estimate>value){best=seat;value=estimate;}
+    }
+    return {action:'swap',value:best};
+  }
+  if(s.phase==='bidding'){
+    const hand=s.hands[p],estimate=bidEstimate(hand,s.difficulty),available=bids(s,p);
+    const safeNil=estimate<1.2&&hand.every(c=>rank(c)<12&&(suit(c)!==0||rank(c)<=7));
+    const desired=safeNil?0:Math.max(2,Math.floor(estimate));
+    return {action:'bid',value:available.reduce((a,b)=>b<=desired?b:a,available[0])};
+  }
   const hand=s.hands[p],cards=legal(s,p),winner=trickWinner(s);
   const leader=s.scores.indexOf(Math.max(...s.scores));
   const target=s.scores[leader]>s.scores[p]?leader:-1;
+  const info=publicKnowledge(s,p);
   let best=cards[0],bestValue=-Infinity;
   for(const card of cards){
-    const value=playValue(s,p,card,winner,target,hand)+(s.difficulty===0?randomInt(8):0);
+    const value=playValue(s,p,card,winner,target,hand,info)+(s.difficulty===0?randomInt(8):0);
     if(value>bestValue){best=card;bestValue=value;}
   }
   return {action:'play',value:best};
 }
-function view(s,p){const v=clone(s);delete v.hands;v.hand=[...s.hands[p]];v.hand_counts=s.hands.map(h=>h.length);v.seat=p;v.legal=s.phase==='playing'&&s.current===p?legal(s,p):[];v.available_bids=s.phase==='bidding'&&s.current===p?bids(s,p):[];return v;}
+function view(s,p){
+  const v=clone(s);
+  delete v.hands;
+  v.hand_concealed=s.round>1&&p===s.king&&(s.phase==='swapping'||Boolean(s.presentation));
+  v.hand=v.hand_concealed?[s.exposed[p]]:[...s.hands[p]];
+  v.hand_counts=s.hands.map(h=>h.length);
+  v.seat=p;
+  v.legal=s.phase==='playing'&&s.current===p?legal(s,p):[];
+  v.available_bids=s.phase==='bidding'&&s.current===p?bids(s,p):[];
+  return v;
+}
 module.exports={start,nextRound,act,collect,ai,view,legal,bids,scoreBid,matchWinner,trickWinner};
