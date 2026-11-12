@@ -183,8 +183,11 @@ function playValue(s,p,card,winner,leader,hand,info){
   // Save trumps when another player already denies the leader, but spend them to secure a contract.
   if(winner>=0&&suit(lead)!==0&&suit(card)===0&&card!==QUEEN)value-=10+rank(card)/2;
   if(!wins&&suit(card)!==0){
-    value+=rank(card)/4;
-    if(suit(card)!==suit(lead)&&hand.filter(c=>suit(c)===suit(card)).length===1)value+=6;
+    const master=!info.outstanding.some(c=>suit(c)===suit(card)&&beats(c,card));
+    // A lost trick is a chance to shed losers, not future winners (except for a live nil).
+    value+=(nil?1:-1)*rank(card)/4;
+    if(master&&!nil)value-=12;
+    if((nil||!master)&&suit(card)!==suit(lead)&&hand.filter(c=>suit(c)===suit(card)).length===1)value+=6;
   }
   if(winner<0){
     const masters=info.outstanding.filter(c=>suit(c)===suit(card)&&beats(c,card)).length;
