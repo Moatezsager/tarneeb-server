@@ -74,7 +74,9 @@ function advance(state,room,now){
 function reply(room,state,uid,now){
   const p=room.players.find(p=>p.uid===uid);if(!p)fail('permission-denied','لست عضوًا في الغرفة');
   let view={};
-  if(state){view=engine.view(state,p.index);view.presentation_remaining=Math.max(0,(state.presentationUntil-now)/1000);view.turn_remaining=Math.max(0,(state.turnDueAt-now)/1000);view.humans=Array.from({length:4},(_,i)=>room.players.some(p=>p.index===i&&p.status==='connected'));if(state.presentation){view.legal=[];view.available_bids=[];}}
+  if(state){view=engine.view(state,p.index);view.presentation_remaining=Math.max(0,(state.presentationUntil-now)/1000);view.turn_remaining=Math.max(0,(state.turnDueAt-now)/1000);view.humans=Array.from({length:4},(_,i)=>room.players.some(p=>p.index===i&&p.status==='connected'));if(state.presentation){view.legal=[];view.available_bids=[];}
+    // The client renders last_trick, trap, results and hand_counts only; sending full history on every poll wastes bandwidth.
+    delete view.history;delete view.played;delete view.round_start_scores;}
   if(state?.phase==='round_end'&&state.winner<0){view.ready_seats=readySeats(state,room);delete view.readyUids;}
   return {room:{...publicRoom(room),chat:room.chat||[]},view,serverTime:now};
 }
@@ -83,10 +85,13 @@ function createService(db, clock=Date.now, notifications){
   const rateLimits=new Map();
   // shortcut: five-second snapshots bound cross-instance staleness; use shared invalidation before scaling out.
   const pollCache=new Map();
+  // shortcut: usage counters are per process and reset on restart; they inspect cost, they are not billing.
+  const stats={pollHits:0,pollSnapshots:0,roomWrites:0,mutations:0};
   const ref=p=>db.doc(p);
   function pollSnapshot(roomId,now){
     const cached=pollCache.get(roomId);
-    if(cached&&now<cached.until)return cached.promise;
+    if(cached&&now<cached.until){stats.pollHits++;return cached.promise;}
+    stats.pollSnapshots++;
     const entry={until:now+5000,promise:db.runTransaction(async tx=>{
       const docs=await tx.getAll(ref(`rooms/${roomId}`),ref(`roomSecrets/${roomId}`));
       if(!docs[0].exists)docs.push(await tx.get(ref(`roomResults/${roomId}`)));
@@ -101,6 +106,7 @@ function createService(db, clock=Date.now, notifications){
   const profile=async(tx,uid)=>{const s=await tx.get(ref(`users/${uid}`));if(!s.exists)fail('failed-precondition','أكمل ملفك الشخصي أولًا');const p=s.data();if(p.deleting)fail('permission-denied','الحساب قيد الحذف');if(p.uid!==uid)fail('failed-precondition','أعد مزامنة ملفك الشخصي');return p;};
   async function roomData(tx,roomId,allowMissing=false,snapshot){if(!id(roomId))fail('invalid-argument','رمز غرفة غير صالح');const [r,s]=snapshot??await tx.getAll(ref(`rooms/${roomId}`),ref(`roomSecrets/${roomId}`));if(!r.exists&&allowMissing)return null;if(!r.exists||r.data().protocolVersion!==VERSION||!s.exists)fail('not-found','الغرفة غير موجودة أو تحتاج إصدارًا أحدث');if(r.data().expiresAt.toMillis()<=clock())fail('not-found','انتهت صلاحية الغرفة');return [r.data(),s.data(),s.data().state?JSON.parse(s.data().state):null];}
   async function saveRoom(tx,r,secret,state,now){
+    stats.roomWrites+=2;
     r.updatedAt=stamp(now);r.expiresAt=stamp(now+(r.status==='finished'?HOUR:6*HOUR));r.revision=(r.revision||0)+1;
     if(state?.winner>=0&&r.status!=='finished'){
       r.status='finished';r.expiresAt=stamp(now+5*60000);
@@ -372,7 +378,8 @@ function createService(db, clock=Date.now, notifications){
       }
       if(op==='poll'&&r.status==='finished')return reply(r,state,uid,now);
       let changed=state?.winner>=0;
-      if(now-(secret.presence[uid]||0)>15000){secret.presence[uid]=now;if(op==='poll'&&d.latencyMs>0){const self=r.players.find(p=>p.uid===uid);self.latencyMs=d.latencyMs;self.latencyAt=now;}changed=true;}
+      // Presence every 30s still keeps the 45s disconnect threshold; it also halves writes and snapshot invalidations.
+      if(now-(secret.presence[uid]||0)>30000){secret.presence[uid]=now;if(op==='poll'&&d.latencyMs>0){const self=r.players.find(p=>p.uid===uid);self.latencyMs=d.latencyMs;self.latencyAt=now;}changed=true;}
       for(const p of r.players){const status=now-(secret.presence[p.uid]||0)>45000?'disconnected':'connected';if(p.status!==status){p.status=status;changed=true;}}
       if(r.status==='waiting'){
         const remaining=r.players.filter(p=>p.uid===uid||now-(secret.presence[p.uid]||0)<120000);
@@ -410,6 +417,7 @@ function createService(db, clock=Date.now, notifications){
   async function execute(uid,input){
     if(!id(uid))fail('unauthenticated','سجل دخولك أولًا');keys(input,['op','payload','requestId','protocolVersion']);if(input.protocolVersion!==VERSION)fail('failed-precondition','حدّث اللعبة إلى الإصدار الجديد');
     const op=str(input.op,1,32),d=input.payload??{},mutation=!readOps.has(op);if(mutation&&(!id(input.requestId)||input.requestId.length<16))fail('invalid-argument','معرّف عملية مطلوب');
+    if(mutation)stats.mutations++;
     // Limit attempts, including failed passwords, separately from the operation transaction.
     const now=clock(),sensitive=['joinRoom','createRoom','invite','requestFriend'].includes(op),window=Math.floor(now/60000);
     // One Render instance: throttle in memory instead of billing a Firestore write per poll.
@@ -446,6 +454,7 @@ function createService(db, clock=Date.now, notifications){
     return result;
   }
   execute.invalidateRoom=roomId=>pollCache.delete(roomId);
+  execute.stats=stats;
   return execute;
 }
 async function removeExpired(db,ref,cutoff){

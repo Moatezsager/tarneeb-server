@@ -154,6 +154,13 @@ test('the king sees only the exposed card until the swap presentation closes',()
   assert.deepEqual(e.view(s,king).hand,hand);
   assert.equal(e.view(s,king).hand_concealed,false);
 });
+test('wire view omits fields the game UI never reads',()=>{
+  const s=e.start(['a','b','c','d'],61);
+  const r={players:[{uid:'alice',index:0,status:'connected'}],createdAt:{toMillis:()=>0},updatedAt:{toMillis:()=>0},expiresAt:{toMillis:()=>10000}};
+  const v=reply(r,s,'alice',0).view;
+  for(const key of ['history','played','round_start_scores'])assert(!(key in v),`${key} must stay off the wire`);
+  for(const key of ['last_trick','hand_counts','results','trap'])assert(Array.isArray(v[key]),`${key} is rendered by the client`);
+});
 test('private view contains only its hand; presentation ending changes the wire revision',()=>{
   const s=e.start(['a','b','c','d'],61);s.presentation='reveal';s.presentationUntil=4500;s.turnDueAt=4500;
   const r={players:[{uid:'alice',index:0,status:'connected'}],createdAt:{toMillis:()=>0},updatedAt:{toMillis:()=>0},expiresAt:{toMillis:()=>10000}};

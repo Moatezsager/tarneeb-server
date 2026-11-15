@@ -275,7 +275,7 @@ test('concurrent polls share a read-only snapshot and room writes invalidate it'
   await reject(query('outsider','poll',{roomId:room._id}),'permission-denied');
   assert.deepEqual(modes,[true]);
   assert((await db.doc(`rooms/${room._id}`).get()).updateTime.isEqual(before.updateTime));
-  now+=16000;modes.length=0;
+  now+=31000;modes.length=0;
   const heartbeat=await query('poll-reader','poll',{roomId:room._id,latencyMs:300});
   assert.deepEqual(modes,[true,false]);assert(heartbeat.room.revision>room.revision);
   assert.equal(heartbeat.room.players[0].latencyMs,300);assert.equal(heartbeat.room.players[0].latencyAt,now);
