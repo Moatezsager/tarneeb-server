@@ -7,6 +7,9 @@ const {completeProfile,validateProfileEdit}=require('./profile');
 const {removeMember,removeRoom}=require('./room-lifecycle');
 const {economy,saveEconomy,contacts,saveContacts,hasFriend,MAX_CONTACTS}=require('./account-data');
 const VERSION=3, HOUR=3600000;
+// The hub sends a presence heartbeat every 3 minutes; the previous 150s window
+// showed a seated player as offline for 30s between beats. Keep a margin.
+const ONLINE_MS=200000;
 const CATALOG=[
   {id:'emerald',kind:'frame',name:'إطار الزمرد',price:100},
   {id:'royal',kind:'frame',name:'الإطار الملكي',price:250},
@@ -35,7 +38,12 @@ function keys(d,allowed){if(!d||typeof d!=='object'||Array.isArray(d)||Object.ke
 const stamp=n=>Timestamp.fromMillis(n);
 const hash=x=>createHash('sha256').update(x).digest('hex');
 function pendingRequest(snapshot,now){const request=snapshot.data();return request?.status==='pending'&&request.createdAt?.toMillis()>now-7*24*HOUR&&(!request.expiresAt||request.expiresAt.toMillis()>now);}
-function safeProfile(p){return {uid:p.uid,name:p.name,searchId:p.searchId,country:p.country,gender:p.gender,avatar:p.avatar,...cosmetics(p),points:p.points||0,...(p.showAge===true&&Number.isInteger(p.age)&&p.age>=1&&p.age<=120?{age:p.age}:{}),status:p.status==='online'&&p.lastSeen?.toMillis()>Date.now()-150000?'online':'offline'};}
+function presenceView(p={},now=Date.now()){
+  const lastSeenAt=p.lastSeen?.toMillis?.()||0;
+  const online=p.status==='online'&&lastSeenAt>now-ONLINE_MS;
+  return {online,status:online?'online':'offline',lastSeenAt};
+}
+function safeProfile(p,now=Date.now()){return {uid:p.uid,name:p.name,searchId:p.searchId,country:p.country,gender:p.gender,avatar:p.avatar,...cosmetics(p),points:p.points||0,...(p.showAge===true&&Number.isInteger(p.age)&&p.age>=1&&p.age<=120?{age:p.age}:{}),status:presenceView(p,now).status};}
 function player(p,index){return {uid:p.uid,name:p.name,avatar:p.avatar,...cosmetics(p),country:p.country,index,status:'connected'};}
 function publicRoom(r){const {secret,gameState,chatCooldown,chat,...data}=r;return {...data,createdAt:r.createdAt.toMillis(),updatedAt:r.updatedAt.toMillis(),expiresAt:r.expiresAt.toMillis()};}
 function passwordHash(password,salt){return scryptSync(password,salt,32).toString('hex');}
@@ -143,7 +151,7 @@ function createService(db, clock=Date.now, notifications){
       if(user?.uid!==uid||typeof user.profileComplete!=='boolean'||!/^[A-Z0-9-]{3,32}$/.test(user.searchId??''))fail('not-found','ملف اللاعب يحتاج تهيئة');
       const account=await economy(tx,db,uid,user);
       if(!user.economy)saveEconomy(tx,ref(`users/${uid}`),account);
-      return {profile:{...safeProfile(user),age:user.age||0,showAge:user.showAge===true,
+      return {profile:{...safeProfile(user,now),age:user.age||0,showAge:user.showAge===true,
         profileComplete:completeProfile(user),points:account.value.points,gold:account.value.gold}};
     }
     if(op==='profile'){
@@ -169,7 +177,7 @@ function createService(db, clock=Date.now, notifications){
       tx.set(ref(`searchIds/${searchId}`),{uid,createdAt:stamp(now)});
       tx.set(doc.ref,{...p,...(!doc.exists?{contacts:[]}:{}),economy:account.value},{merge:true});
       for(const legacy of account.legacy)tx.delete(legacy.ref);
-      return {profile:{...safeProfile(p),age:p.age,showAge:p.showAge,profileComplete:p.profileComplete,points:account.value.points,gold:account.value.gold}};
+      return {profile:{...safeProfile(p,now),age:p.age,showAge:p.showAge,profileComplete:p.profileComplete,points:account.value.points,gold:account.value.gold}};
     }
     if(op==='publicProfile'){
       keys(d,['uid']);if(!id(d.uid))fail('invalid-argument','معرّف لاعب غير صالح');
@@ -185,8 +193,8 @@ function createService(db, clock=Date.now, notifications){
           else if(pendingRequest(sent,now))relationship='pending';
         }
       }
-      const {points,games,wins}=account.value;
-      return {profile:{...safeProfile(p),...(d.uid===uid?{age:p.age}:{}),lastSeenAt:p.lastSeen?.toMillis()||0,points,games,wins},relationship,requestId};
+      const {points,games,wins}=account.value,seen=presenceView(p,now);
+      return {profile:{...safeProfile(p,now),lastSeenAt:seen.lastSeenAt,...(d.uid===uid?{age:p.age}:{}),points,games,wins},relationship,requestId};
     }
     if(['store','buyItem','equipItem'].includes(op)){
       keys(d,op==='store'?[]:op==='equipItem'?['itemId','slot']:['itemId']);const p=await profile(tx,uid);
@@ -223,7 +231,7 @@ function createService(db, clock=Date.now, notifications){
       keys(d,['searchId']);const searchId=str(d.searchId,3,32).toUpperCase();if(!/^[A-Z0-9-]+$/.test(searchId))fail('invalid-argument','معرّف غير صالح');
       const reservation=await tx.get(ref(`searchIds/${searchId}`));let userId=reservation.data()?.uid;
       if(!userId){const found=await tx.get(db.collection('users').where('searchId','==',searchId).limit(2));if(found.size!==1)return {profile:null};userId=found.docs[0].id;}
-      if(userId===uid)return {profile:null};const p=await tx.get(ref(`users/${userId}`));return {profile:p.exists&&!p.data().deleting?{...safeProfile(p.data()),uid:userId}:null};
+      if(userId===uid)return {profile:null};const p=await tx.get(ref(`users/${userId}`));return {profile:p.exists&&!p.data().deleting?{...safeProfile(p.data(),now),uid:userId}:null};
     }
     if(op==='friends'||op==='requests'||op==='invites'){
       keys(d,['cursor']);
@@ -240,7 +248,7 @@ function createService(db, clock=Date.now, notifications){
       let q=op==='friends'?collection:collection.where('toUid','==',uid).where('status','==','pending');q=q.orderBy('__name__');
       if(d.cursor)q=q.startAfter(d.cursor);const docs=await tx.get(q.limit(30));
       let items=docs.docs.map(x=>({...x.data(),_id:x.id}));
-      if(op==='friends'&&items.length){const profiles=await tx.getAll(...items.map(x=>ref(`users/${x.uid}`)));items=items.map((f,i)=>profiles[i].exists?{...safeProfile(profiles[i].data()),uid:f.uid,_id:f._id}:f);}
+      if(op==='friends'&&items.length){const profiles=await tx.getAll(...items.map(x=>ref(`users/${x.uid}`)));items=items.map((f,i)=>profiles[i].exists?{...safeProfile(profiles[i].data(),now),uid:f.uid,_id:f._id}:f);}
       if(op==='requests')items=items.filter(x=>x.createdAt?.toMillis()>now-7*24*HOUR&&(!x.expiresAt||x.expiresAt.toMillis()>now));
       if(op==='invites')items=items.filter(x=>x.expiresAt?.toMillis()>now);
       return {items:items.map(x=>({...x,createdAt:x.createdAt?.toMillis()||0,updatedAt:x.updatedAt?.toMillis()||0,expiresAt:x.expiresAt?.toMillis()||0})),cursor:docs.size===30?docs.docs.at(-1).id:''};
@@ -383,7 +391,14 @@ function createService(db, clock=Date.now, notifications){
       for(const p of r.players){const status=now-(secret.presence[p.uid]||0)>45000?'disconnected':'connected';if(p.status!==status){p.status=status;changed=true;}}
       if(r.status==='waiting'){
         const remaining=r.players.filter(p=>p.uid===uid||now-(secret.presence[p.uid]||0)<120000);
-        if(remaining.length!==r.players.length){r.players=remaining;r.memberUids=remaining.map(p=>p.uid);changed=true;}
+        if(remaining.length!==r.players.length){
+          // A waiting room can outlive many join/leave cycles; drop presence and
+          // cooldown entries for seats that were pruned so the maps stay small.
+          const keep=new Set(remaining.map(p=>p.uid));
+          for(const member of Object.keys(secret.presence))if(!keep.has(member))delete secret.presence[member];
+          for(const member of Object.keys(r.chatCooldown||{}))if(!keep.has(member))delete r.chatCooldown[member];
+          r.players=remaining;r.memberUids=remaining.map(p=>p.uid);changed=true;
+        }
       }
       if(!r.players.some(p=>p.uid===r.hostId&&p.status==='connected')){
         const leader=r.players.find(p=>p.status==='connected');
@@ -455,6 +470,8 @@ function createService(db, clock=Date.now, notifications){
   }
   execute.invalidateRoom=roomId=>pollCache.delete(roomId);
   execute.stats=stats;
+  // Diagnostics stay in process memory: they describe cost, never user data.
+  execute.diagnostics=()=>({pollCache:pollCache.size,rateLimits:rateLimits.size,stats:{...stats}});
   return execute;
 }
 async function removeExpired(db,ref,cutoff){
@@ -466,4 +483,4 @@ async function removeExpired(db,ref,cutoff){
     return true;
   });
 }
-module.exports={createService,VERSION,advance,reply,removeExpired};
+module.exports={createService,VERSION,ONLINE_MS,presenceView,advance,reply,removeExpired};

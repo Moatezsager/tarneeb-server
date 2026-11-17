@@ -449,7 +449,11 @@ test('administrator gold credits are displayed, auditable and idempotent under r
   assert.deepEqual(await Promise.all([admin('owner','creditGold',payload),admin('owner','creditGold',payload)]),[{gold:47},{gold:47}]);
   await reject(admin('owner','creditGold',{...payload,amount:41}),'invalid-argument');
   assert.equal((await call(uid,'store')).gold,47);
-  assert.equal((await admin('owner','users',{cursor:''})).items[0].gold,47);
+  const listed=(await admin('owner','users',{cursor:''})).items[0];
+  assert.equal(listed.gold,47);
+  assert.equal(typeof listed.lastSeen,'number');
+  assert.equal(listed.searchId,(await db.doc(`users/${uid}`).get()).data().searchId);
+  assert.equal(typeof listed.online,'boolean');
   const audit=await db.collection('adminAudit').where('target','==',uid).get();
   assert.equal(audit.size,1);
   assert.equal(audit.docs[0].data().before,7);
@@ -507,10 +511,18 @@ test('maintenance clears expired results, abandoned rooms and orphaned seat poin
   const result=db.doc('roomResults/expired-fixture'),pointer=db.doc('activeRooms/aaa-orphan');
   await result.set({expiresAt:Timestamp.fromMillis(Date.now()-1000)});
   await pointer.set({roomId:'v3_MISSING'});
+  const oldAudit=db.doc('adminAudit/old-fixture'),freshAudit=db.doc('adminAudit/fresh-fixture');
+  await oldAudit.set({actor:'owner',action:'creditGold',target:'gone',state:'completed',createdAt:Timestamp.fromMillis(Date.now()-181*86400000)});
+  await freshAudit.set({actor:'owner',action:'creditGold',target:'kept',state:'completed',createdAt:Timestamp.now()});
   const maintenance=createMaintenance(db,{});
   const report=await maintenance.run();
   assert.equal(report.errors,0);
   assert(report.lastRun>0&&report.removed>=3);
+  assert.equal(report.audit,1);
+  assert.equal(report.auditRetentionDays,180);
+  assert(report.nextAuditAt>Date.now());
+  assert(!(await oldAudit.get()).exists,'audit rows past retention are removed');
+  assert((await freshAudit.get()).exists,'recent audit rows are kept');
   for(const ref of [roomRef,db.doc(`roomSecrets/${room._id}`),db.doc(`activeRooms/${uid}`),result,pointer]){
     assert(!(await ref.get()).exists,ref.path);
   }

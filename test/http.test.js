@@ -12,7 +12,9 @@ test('HTTP boundary verifies identity, revocation, admin cookies, origin and pri
     async verifySessionCookie(cookie,revoked){assert.equal(revoked,true);assert.equal(cookie,'fixture-session');return {uid:'owner'};}
   };
   const notifications=createNotifications();
-  const server=createHttpServer({auth,notifications,execute:async(uid,data)=>{executed++;if(data.fail)throw Error('private credential');if(data.quota)throw Object.assign(Error('internal quota details'),{code:8});return {uid};},admin:async()=>({items:[]}),adminUids:new Set(['owner']),origin:'https://fixture.invalid',webOrigins:['https://game.fixture.invalid'],webApiKey:'public-fixture',projectId:'demo-tarneeb'});
+  const execute=async(uid,data)=>{executed++;if(data.fail)throw Error('private credential');if(data.quota)throw Object.assign(Error('internal quota details'),{code:8});return {uid};};
+  execute.stats={pollHits:3};execute.diagnostics=()=>({pollCache:1,rateLimits:2,stats:{pollHits:3}});
+  const server=createHttpServer({auth,notifications,execute,admin:async(actor,action,data)=>action==='findUser'?{args:data}:{items:[]},adminUids:new Set(['owner']),origin:'https://fixture.invalid',webOrigins:['https://game.fixture.invalid'],webApiKey:'public-fixture',projectId:'demo-tarneeb'});
   await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
   t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
   const base=`http://127.0.0.1:${server.address().port}`;
@@ -41,6 +43,11 @@ test('HTTP boundary verifies identity, revocation, admin cookies, origin and pri
   for(const flag of ['HttpOnly','SameSite=Strict','Secure','Path=/admin'])assert(cookie.includes(flag));
   assert.equal((await fetch(base+'/admin/api/users')).status,401);
   assert.equal((await fetch(base+'/admin/api/users',{headers:{Cookie:'tarneeb_admin=fixture-session'}})).status,200);
+  const status=await fetch(base+'/admin/api/status',{headers:{Cookie:'tarneeb_admin=fixture-session'}}).then(r=>r.json());
+  assert.equal(status.result.diagnostics.pollCache,1);
+  assert.equal(status.result.node,process.version);
+  const found=await fetch(base+'/admin/api/findUser?q=LY-ABC123',{headers:{Cookie:'tarneeb_admin=fixture-session'}}).then(r=>r.json());
+  assert.deepEqual(found.result.args,{query:'LY-ABC123'});
   assert.equal((await post('/admin/api/closeRoom',{roomId:'room'},{Cookie:'tarneeb_admin=fixture-session',Origin:'https://evil.invalid'})).status,403);
   const error=await post('/online',{data:{fail:true}},{Authorization:'Bearer player'});
   assert.equal(error.status,503);assert(!(await error.text()).includes('private credential'));

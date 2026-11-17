@@ -69,9 +69,10 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,project
       }
       if(route.pathname.startsWith('/admin/api/')){
         const claims=await adminSession(req),action=route.pathname.slice(11);
-        if(req.method==='GET'&&action==='status'){json(res,200,{result:{uid:claims.uid,uptimeSeconds:Math.floor((Date.now()-start)/1000),memoryMB:Math.round(process.memoryUsage().rss/1048576),...metrics,usage:execute.stats,cleanup:maintenance?.snapshot()}});return;}
+        if(req.method==='GET'&&action==='status'){json(res,200,{result:{uid:claims.uid,uptimeSeconds:Math.floor((Date.now()-start)/1000),memoryMB:Math.round(process.memoryUsage().rss/1048576),node:process.version,...metrics,usage:execute.stats,diagnostics:execute.diagnostics?.(),cleanup:maintenance?.snapshot()}});return;}
         if(req.method==='GET'&&['users','rooms','audit'].includes(action)){json(res,200,{result:await admin(claims.uid,action,{cursor:route.searchParams.get('cursor')||''})});return;}
-        if(req.method==='POST'&&['userStatus','closeRoom','creditGold','deleteUser','cleanup'].includes(action)){json(res,200,{result:await admin(claims.uid,action,await body(req))});return;}
+        if(req.method==='GET'&&action==='findUser'){json(res,200,{result:await admin(claims.uid,'findUser',{query:route.searchParams.get('q')||''})});return;}
+        if(req.method==='POST'&&['userStatus','closeRoom','creditGold','deleteUser','revokeSessions','cleanup'].includes(action)){json(res,200,{result:await admin(claims.uid,action,await body(req))});return;}
         throw new AppError('not-found','مسار غير موجود');
       }
       if(req.method==='POST'&&route.pathname==='/online'){

@@ -2,32 +2,66 @@
 const {Timestamp}=require('firebase-admin/firestore');
 const {createHash}=require('node:crypto');
 const {AppError}=require('./errors');
-const {VERSION}=require('./service');
+const {VERSION,presenceView}=require('./service');
 const {removeRoom}=require('./room-lifecycle');
 const {queueDeletion}=require('./account-deletion');
 const {economy,saveEconomy}=require('./account-data');
 const validId=x=>typeof x==='string'&&/^[A-Za-z0-9_-]{1,128}$/.test(x);
 function createAdmin(db,auth,adminUids,maintenance,invalidateRoom){
+  async function describeUsers(users,now=Date.now()){
+    const refs=users.flatMap(u=>['users','accountDeletions'].map(name=>db.doc(`${name}/${u.uid}`)));
+    const docs=refs.length?await db.getAll(...refs):[];
+    const legacy=users.filter((_,i)=>!docs[i*2].data()?.economy);
+    const wallets=legacy.length?await db.getAll(...legacy.map(u=>db.doc(`wallets/${u.uid}`))):[];
+    const legacyGold=new Map(wallets.map(doc=>[doc.id,doc.data()?.gold||0]));
+    return users.map((u,index)=>{
+      const [profile,deletion]=docs.slice(index*2,index*2+2),p=profile.data()||{},seen=presenceView(p,now);
+      return {uid:u.uid,email:u.email||'',name:p.name||u.displayName||'',searchId:p.searchId||'',country:p.country||'',
+        disabled:u.disabled,online:seen.online,lastSeen:seen.lastSeenAt,lastSignIn:u.metadata?.lastSignInTime||'',
+        gold:p.economy?.gold??legacyGold.get(u.uid)??0,hasProfile:profile.exists,deleting:deletion.exists,
+        protected:adminUids.has(u.uid),createdAt:u.metadata?.creationTime||''};
+    });
+  }
+  async function resolveUid(query){
+    if(query.includes('@')){
+      try{return (await auth.getUserByEmail(query)).uid;}catch{return '';}
+    }
+    if(validId(query)){
+      try{return (await auth.getUser(query)).uid;}catch{}
+    }
+    if(/^[A-Za-z0-9-]{3,32}$/.test(query)){
+      const found=await db.collection('users').where('searchId','==',query.toUpperCase()).limit(1).get();
+      if(found.size)return found.docs[0].id;
+    }
+    return '';
+  }
   return async function admin(actor,action,data={}){
     if(!adminUids.has(actor))throw new AppError('permission-denied','غير مصرح لك بالإدارة');
     if(action==='users'){
       if(typeof data.cursor!=='string'||data.cursor.length>2000)throw new AppError('invalid-argument','صفحة غير صالحة');
       const page=await auth.listUsers(25,data.cursor||undefined);
-      const refs=page.users.flatMap(u=>['users','accountDeletions'].map(name=>db.doc(`${name}/${u.uid}`)));
-      const docs=refs.length?await db.getAll(...refs):[];
-      const legacy=page.users.filter((_,i)=>!docs[i*2].data()?.economy);
-      const wallets=legacy.length?await db.getAll(...legacy.map(u=>db.doc(`wallets/${u.uid}`))):[];
-      const legacyGold=new Map(wallets.map(doc=>[doc.id,doc.data()?.gold||0]));
-      return {items:page.users.map((u,index)=>{
-        const [profile,deletion]=docs.slice(index*2,index*2+2);
-        return {uid:u.uid,email:u.email||'',name:profile.data()?.name||u.displayName||'',disabled:u.disabled,
-          gold:profile.data()?.economy?.gold??legacyGold.get(u.uid)??0,hasProfile:profile.exists,deleting:deletion.exists,protected:adminUids.has(u.uid),
-          createdAt:u.metadata.creationTime,lastSignIn:u.metadata.lastSignInTime||''};
-      }),cursor:page.pageToken||''};
+      return {items:await describeUsers(page.users),cursor:page.pageToken||''};
+    }
+    if(action==='findUser'){
+      if(typeof data.query!=='string'||data.query.length>254||Object.keys(data).some(k=>k!=='query'))throw new AppError('invalid-argument','أدخل معرّفًا أو بريدًا للبحث');
+      const query=data.query.trim();
+      if(!query)throw new AppError('invalid-argument','أدخل معرّفًا أو بريدًا للبحث');
+      const uid=await resolveUid(query);
+      if(!uid)return {item:null};
+      const user=await auth.getUser(uid),[item]=await describeUsers([user]);
+      const pointer=(await db.doc(`activeRooms/${uid}`).get()).data();
+      let room=null;
+      if(pointer?.roomId){
+        const doc=await db.doc(`rooms/${pointer.roomId}`).get();
+        if(doc.exists)room={id:doc.id,code:doc.data().code,status:doc.data().status};
+      }
+      return {item:{...item,room}};
     }
     if(action==='rooms'){
       const docs=await db.collection('rooms').where('protocolVersion','in',[2,VERSION]).orderBy('updatedAt','desc').limit(30).get();
-      return {items:docs.docs.map(doc=>{const r=doc.data();return {id:doc.id,code:r.code,status:r.status,hostName:r.hostName,mode:r.mode,locked:r.locked,players:r.players.map(p=>({name:p.name,index:p.index,status:p.status})),updatedAt:r.updatedAt.toMillis()};})};
+      return {items:docs.docs.map(doc=>{const r=doc.data();return {id:doc.id,code:r.code,status:r.status,hostName:r.hostName,mode:r.mode,locked:r.locked,
+        players:r.players.map(p=>({name:p.name,index:p.index,status:p.status,latencyMs:p.latencyMs||0})),botSeats:r.botSeats||[],
+        createdAt:r.createdAt?.toMillis()||0,updatedAt:r.updatedAt.toMillis(),expiresAt:r.expiresAt?.toMillis()||0};})};
     }
     if(action==='audit'){
       const docs=await db.collection('adminAudit').orderBy('createdAt','desc').limit(30).get();
@@ -79,6 +113,16 @@ function createAdmin(db,auth,adminUids,maintenance,invalidateRoom){
       const record=await db.collection('adminAudit').add({actor,action,target:data.uid,disabled:data.disabled,state:'pending',createdAt:Timestamp.now()});
       await auth.updateUser(data.uid,{disabled:data.disabled});
       if(data.disabled)await auth.revokeRefreshTokens(data.uid);
+      await record.update({state:'completed'});
+      return {updated:true};
+    }
+    if(action==='revokeSessions'){
+      if(!validId(data.uid)||Object.keys(data).some(k=>k!=='uid'))throw new AppError('invalid-argument','طلب غير صالح');
+      if(adminUids.has(data.uid))throw new AppError('permission-denied','لا يمكن إنهاء جلسات حساب إداري');
+      if((await db.doc(`accountDeletions/${data.uid}`).get()).exists)throw new AppError('failed-precondition','الحساب قيد الحذف');
+      // Record intent before touching Auth so a failed final log stays visible.
+      const record=await db.collection('adminAudit').add({actor,action,target:data.uid,state:'pending',createdAt:Timestamp.now()});
+      await auth.revokeRefreshTokens(data.uid);
       await record.update({state:'completed'});
       return {updated:true};
     }

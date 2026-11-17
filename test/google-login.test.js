@@ -18,7 +18,7 @@ test('Google popup uses memory persistence, exchanges only Firebase token and cl
       if(path==='/admin/api/rooms')result={items:[]};
       return {ok,status:ok?200:403,json:async()=>ok?{result}:{error:{message:'الحساب غير مسجل كمسؤول'}}};
     };
-    vm.runInNewContext(readFileSync(require.resolve('../public/app.js'),'utf8'),{firebase,fetch,document:{getElementById:element,querySelectorAll:()=>[],createElement:()=>({append(){},textContent:''})},Date,console});
+    vm.runInNewContext(readFileSync(require.resolve('../public/app.js'),'utf8'),{firebase,fetch,document:{getElementById:element,querySelectorAll:()=>[],createElement:()=>({append(){},textContent:''})},Date,console,setInterval:()=>0});
     await new Promise(resolve=>setImmediate(resolve));
     assert.equal(element('google-login').disabled,false);
     await element('google-login').onclick();

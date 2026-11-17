@@ -16,11 +16,14 @@
     <span class="mark" aria-hidden="true">♠</span>
     <div><span class="eyebrow">TARNEEB CONTROL ROOM</span><h1>لوحة إدارة طرنيب</h1></div>
   </div>
-  <button id="logout" hidden>تسجيل الخروج</button>
+  <div class="header-actions">
+    <span id="actor" class="chip" hidden></span>
+    <button id="logout" hidden>تسجيل الخروج</button>
+  </div>
 </header>
 <main>
   <p id="notice" role="status" aria-live="polite"></p>
-  <section id="login" class="panel">
+  <section id="login" class="panel login-panel">
     <h2>دخول المسؤول</h2>
     <p>استخدم حساب Firebase المعتمد لإدارة اللعبة.</p>
     <button id="google-login" type="button" class="primary" disabled>الدخول باستخدام Google</button>
@@ -32,22 +35,36 @@
     </form>
   </section>
   <section id="dashboard" hidden>
-    <div id="metrics" class="metrics"></div>
-    <section class="panel maintenance" aria-labelledby="cleanup-title">
-      <div><h2 id="cleanup-title">صيانة قاعدة البيانات</h2><p id="cleanup-status" role="status">جارٍ قراءة حالة التنظيف…</p></div>
-      <button id="cleanup-button">تنظيف الآن</button>
+    <section id="metrics" class="metrics" aria-label="ملخص الخادم"></section>
+    <section class="panel ops" aria-labelledby="ops-title">
+      <div class="ops-copy">
+        <h2 id="ops-title">الصيانة والموارد</h2>
+        <p id="cleanup-status" role="status">جارٍ قراءة حالة التنظيف…</p>
+        <p id="resource-status" class="muted">جارٍ قراءة عدادات الاستخدام…</p>
+      </div>
+      <div class="ops-actions">
+        <button id="cleanup-button">تنظيف الآن</button>
+        <button id="refresh">تحديث</button>
+      </div>
     </section>
     <nav aria-label="أقسام الإدارة">
       <button data-tab="rooms" aria-pressed="true">الغرف</button>
-      <button data-tab="users" aria-pressed="false">المستخدمون والذهب</button>
+      <button data-tab="users" aria-pressed="false">المستخدمون</button>
       <button data-tab="audit" aria-pressed="false">سجل الإدارة</button>
-      <button id="refresh">تحديث</button>
     </nav>
     <section class="panel">
       <div class="section-head">
         <div><h2 id="title">الغرف</h2><p id="hint"></p></div>
-        <label class="filter">البحث في الصفحة الحالية<input id="filter" type="search" placeholder="الاسم، المعرّف أو الرمز"></label>
+        <div class="tools">
+          <form id="user-search" class="search" hidden>
+            <label for="query" class="sr-only">البحث عن مستخدم</label>
+            <input id="query" type="search" placeholder="UID أو بريد أو معرّف اللاعب" maxlength="254" autocomplete="off">
+            <button type="submit" class="primary">بحث</button>
+          </form>
+          <label class="filter">تصفية الصفحة<input id="filter" type="search" placeholder="الاسم أو المعرّف"></label>
+        </div>
       </div>
+      <p id="search-note" class="search-note" hidden></p>
       <p id="result-count" class="result-count"></p>
       <div class="table-wrap"><table><thead id="head"></thead><tbody id="rows"></tbody></table></div>
       <button id="more" hidden>الصفحة التالية</button>

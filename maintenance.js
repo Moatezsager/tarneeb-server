@@ -9,24 +9,30 @@ const INTERVAL_MS = 120000;
 const ABANDONED_MS = 180000;
 const EXPIRY_INTERVAL_MS = 15*60000;
 const EXPIRING = ['rooms','roomSecrets','roomResults','operations','friendRequests','roomInvites','rateLimits','accountDeletions'];
+// Audit rows are the only collection without expiresAt. Keep 180 days by default;
+// set AUDIT_RETENTION_DAYS=0 to retain them forever, or a smaller number to trim more.
+const rawAuditDays = Number(process.env.AUDIT_RETENTION_DAYS);
+const AUDIT_RETENTION_DAYS = Number.isFinite(rawAuditDays) && rawAuditDays >= 0 ? rawAuditDays : 180;
+const AUDIT_RETENTION_MS = AUDIT_RETENTION_DAYS*86400000;
 
 function createMaintenance(db, auth, invalidateRoom) {
-  const state = {running:false, lastRun:0, removed:0, accounts:0, errors:0, intervalSeconds:INTERVAL_MS/1000};
-  let pointerCursor, nextPointerScan = 0, nextExpirySweep = 0, rerun = false;
-  const snapshot = () => ({...state});
+  const state = {running:false, lastRun:0, removed:0, accounts:0, audit:0, errors:0,
+    intervalSeconds:INTERVAL_MS/1000, expirySeconds:EXPIRY_INTERVAL_MS/1000, auditRetentionDays:AUDIT_RETENTION_DAYS};
+  let pointerCursor, nextPointerScan = 0, nextExpirySweep = 0, nextAuditSweep = 0, rerun = false;
+  const snapshot = () => ({...state,nextRunAt:state.lastRun?state.lastRun+INTERVAL_MS:0,nextExpiryAt:nextExpirySweep,nextAuditAt:AUDIT_RETENTION_MS?nextAuditSweep:0});
 
   function failure(error) {
     state.errors++;
     console.error(JSON.stringify({event:'cleanup_failed',code:String(error.code||'internal').slice(0,80)}));
   }
-  async function sweep(query, remove) {
+  async function sweep(query, remove, counter='removed') {
     try {
       const docs = (await query.limit(80).get()).docs;
       for (let i = 0; i < docs.length; i += 8) {
         const results = await Promise.allSettled(docs.slice(i,i+8).map(remove));
         for (const result of results) {
           if (result.status === 'rejected') failure(result.reason);
-          else if (result.value) state.removed++;
+          else if (result.value) state[counter]++;
         }
       }
       return docs.length;
@@ -35,7 +41,7 @@ function createMaintenance(db, auth, invalidateRoom) {
   async function run() {
     if (state.running) return snapshot();
     state.running = true;
-    state.removed = state.accounts = state.errors = 0;
+    state.removed = state.accounts = state.audit = state.errors = 0;
     const now = Timestamp.now();
     try {
       const jobs = await db.collection('accountDeletions').where('nextAttemptAt','<=',now).limit(4).get();
@@ -62,6 +68,11 @@ function createMaintenance(db, auth, invalidateRoom) {
           backlog=backlog||count===80;
         }
         nextExpirySweep=now.toMillis()+(backlog?INTERVAL_MS:EXPIRY_INTERVAL_MS);
+      }
+      if(AUDIT_RETENTION_MS && now.toMillis()>=nextAuditSweep){
+        const count=await sweep(db.collection('adminAudit').where('createdAt','<=',Timestamp.fromMillis(now.toMillis()-AUDIT_RETENTION_MS)),
+          async doc=>{await doc.ref.delete();return true;},'audit');
+        nextAuditSweep=now.toMillis()+(count===80?INTERVAL_MS:24*3600000);
       }
       const cutoff = Timestamp.fromMillis(now.toMillis()-ABANDONED_MS);
       const stale = db.collection('rooms').where('protocolVersion','in',[2,VERSION])
