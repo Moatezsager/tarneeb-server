@@ -13,6 +13,13 @@
   --danger: #ffb7b0;
   --warn: #ffd79a;
   --ok: #9ef0d5;
+  --ease-out: cubic-bezier(.23, 1, .32, 1);
+  --ease-in-out: cubic-bezier(.77, 0, .175, 1);
+  --dur-press: 120ms;
+  --dur-ui: 160ms;
+  --dur-enter: 200ms;
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", Dubai, "Noto Sans Arabic", "Noto Naskh Arabic", Tahoma, Arial, sans-serif;
+  --font-numeric: "Segoe UI Variable Text", "Segoe UI", Tahoma, Arial, sans-serif;
 }
 * { box-sizing: border-box; }
 body {
@@ -23,7 +30,7 @@ body {
     radial-gradient(1100px 520px at 88% -12%, #1b4a48 0%, transparent 62%),
     radial-gradient(700px 420px at 0% 0%, #143143 0%, transparent 58%),
     var(--bg);
-  font: 15px/1.65 Tahoma, Arial, sans-serif;
+  font: 15px/1.65 var(--font-ui);
 }
 header, main, footer { max-width: 1340px; margin: auto; padding: 20px 28px; }
 header {
@@ -48,8 +55,8 @@ header {
   box-shadow: inset 0 1px 0 #ffffff14;
 }
 .eyebrow { font: 11px/1 monospace; letter-spacing: .14em; color: var(--gold); }
-h1 { margin: 4px 0 0; font-size: clamp(22px, 3.4vw, 32px); line-height: 1.25; }
-h2 { margin: 0 0 6px; font-size: 20px; }
+h1 { margin: 4px 0 0; font-size: clamp(22px, 3.4vw, 32px); line-height: 1.35; text-wrap: balance; }
+h2 { margin: 0 0 6px; font-size: 20px; line-height: 1.4; }
 p, small, footer { color: var(--muted); }
 p { margin: 0 0 12px; }
 .chip {
@@ -69,9 +76,12 @@ button, input {
   font: inherit;
   padding: 10px 14px;
 }
-button { cursor: pointer; min-height: 44px; transition: border-color .15s, background .15s, transform .1s; }
-button:hover { border-color: var(--accent); }
-button:active { transform: translateY(1px); }
+button { cursor: pointer; min-height: 44px; transition: background-color var(--dur-press) var(--ease-out), border-color var(--dur-press) var(--ease-out), color var(--dur-press) var(--ease-out), transform var(--dur-press) var(--ease-out); }
+button:active { transform: scale(.97); }
+@media (hover: hover) and (pointer: fine) {
+  button:hover { border-color: var(--accent); }
+  tbody tr:hover { background: #ffffff0a; }
+}
 button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 button:disabled { opacity: .55; cursor: wait; }
 .primary, button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 700; }
@@ -155,8 +165,8 @@ table { width: 100%; border-collapse: collapse; text-align: right; }
 td, th { padding: 11px 12px; border-bottom: 1px solid var(--edge-soft); vertical-align: middle; }
 th { position: sticky; top: 0; z-index: 1; background: #102733; color: var(--muted); font-size: 12.5px; font-weight: 600; }
 tbody tr:nth-child(even) { background: #ffffff05; }
-tbody tr:hover { background: #ffffff0a; }
 td { font-size: 13px; overflow-wrap: anywhere; }
+td[data-label="الذهب"] { font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
 td small { display: block; margin-top: 3px; color: var(--muted); font-size: 11.5px; }
 td button { margin: 2px 4px 2px 0; padding: 6px 10px; min-height: 34px; font-size: 12.5px; }
 .mono { font-family: ui-monospace, Consolas, monospace; direction: ltr; text-align: right; letter-spacing: .02em; }
@@ -200,12 +210,29 @@ dialog {
   padding: 22px;
   box-shadow: 0 30px 80px #000a;
 }
+dialog[open] { animation: dialog-in var(--dur-enter) var(--ease-out); }
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(10px) scale(.97); }
+  to { opacity: 1; transform: none; }
+}
 dialog::backdrop { background: #000a; }
+dialog[open]::backdrop { animation: backdrop-in var(--dur-enter) var(--ease-out); }
+@keyframes backdrop-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
 dialog p { overflow-wrap: anywhere; }
 dialog .actions { justify-content: flex-end; }
 #more { margin-top: 14px; }
 footer { text-align: center; font-size: 12px; padding-top: 6px; padding-bottom: 26px; }
 [hidden] { display: none !important; }
+::selection { background: #82ddc740; color: var(--text); }
+.table-wrap { scrollbar-color: var(--edge) transparent; }
+@media (prefers-reduced-motion: reduce) {
+  button, dialog, dialog::backdrop { transition-duration: 1ms; }
+  button:active { transform: none; }
+  dialog[open], dialog[open]::backdrop { animation-duration: 1ms; }
+}
 @media (max-width: 900px) {
   .metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
