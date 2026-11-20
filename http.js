@@ -13,7 +13,15 @@ async function body(req){
 }
 function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,projectId,production=true,webOrigins=[],maintenance,notifications}){
   const authDomain=projectId?`${projectId}.firebaseapp.com`:'';
-  const start=Date.now(),metrics={requests:0,errors:0,inFlight:0};let window=0,attempts=0;
+  const start=Date.now(),metrics={requests:0,errors:0,inFlight:0,authShared:0};let window=0,attempts=0;
+  const verifying=new Map();
+  // Share only overlapping checks; completed claims are never cached or exempt from revocation checks.
+  async function verifyOnline(token){
+    if(verifying.has(token)){metrics.authShared++;return verifying.get(token);}
+    const pending=auth.verifyIdToken(token,true);
+    verifying.set(token,pending);
+    try{return await pending;}finally{verifying.delete(token);}
+  }
   const files=new Map([['/admin',['index.html','text/html']],['/admin/app.js',['app.js','text/javascript']],['/admin/style.css',['style.css','text/css']]].map(([url,[file,type]])=>[url,{content:readFileSync(path.join(__dirname,'public',file)),type}]));
   function json(res,status,value){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
   async function adminSession(req){
@@ -77,7 +85,9 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,project
       }
       if(req.method==='POST'&&route.pathname==='/online'){
         const token=/^Bearer ([^\s]{1,7000})$/.exec(req.headers.authorization||'')?.[1];if(!token)throw new AppError('unauthenticated','سجل الدخول');
-        let claims;try{claims=await auth.verifyIdToken(token,true);}catch{throw new AppError('unauthenticated','الجلسة غير صالحة أو الحساب محظور');}
+        const authStarted=performance.now();
+        let claims;try{claims=await verifyOnline(token);}catch{throw new AppError('unauthenticated','الجلسة غير صالحة أو الحساب محظور');}
+        const authMs=performance.now()-authStarted;
         const input=await body(req);if(Object.keys(input).length!==1||!input.data)throw new AppError('invalid-argument','طلب غير صالح');
         if(input.data.op==='listenNotifications'&&notifications){
           const cursor=input.data.payload?.cursor;
@@ -89,7 +99,11 @@ function createHttpServer({auth,execute,admin,adminUids,origin,webApiKey,project
           if(!controller.signal.aborted)json(res,200,{result});
           return;
         }
-        json(res,200,{result:await execute(claims.uid,input.data)});return;
+        const operationStarted=performance.now();
+        const result=await execute(claims.uid,input.data);
+        res.setHeader('Server-Timing',`auth;dur=${authMs.toFixed(1)}, operation;dur=${(performance.now()-operationStarted).toFixed(1)}`);
+        res.setHeader('Access-Control-Expose-Headers','Server-Timing');
+        json(res,200,{result});return;
       }
       throw new AppError('not-found','مسار غير موجود');
     }catch(err){

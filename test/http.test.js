@@ -25,6 +25,8 @@ test('HTTP boundary verifies identity, revocation, admin cookies, origin and pri
   assert.equal((await post('/online',{data:{}},{Origin:'https://evil.invalid',Authorization:'Bearer player'})).status,403);
   const cors=await post('/online',{data:{}},{Origin:'https://game.fixture.invalid',Authorization:'Bearer player'});
   assert.equal(cors.status,200);assert.equal(cors.headers.get('Access-Control-Allow-Origin'),'https://game.fixture.invalid');assert.equal(cors.headers.get('Access-Control-Allow-Credentials'),null);
+  assert.match(cors.headers.get('Server-Timing'),/^auth;dur=\d+\.\d, operation;dur=\d+\.\d$/);
+  assert.equal(cors.headers.get('Access-Control-Expose-Headers'),'Server-Timing');
   const missingToken=await post('/online',{data:{}},{Origin:'https://game.fixture.invalid'});assert.equal(missingToken.status,401);assert.equal(missingToken.headers.get('Access-Control-Allow-Origin'),'https://game.fixture.invalid');
 
   assert.deepEqual(await fetch(base+'/admin/config').then(r=>r.json()),{apiKey:'public-fixture',projectId:'demo-tarneeb',authDomain:'demo-tarneeb.firebaseapp.com'});

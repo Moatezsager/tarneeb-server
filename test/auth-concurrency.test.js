@@ -1,0 +1,24 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const {createHttpServer}=require('../http');
+test('overlapping identity checks share work but later requests recheck revocation',async t=>{
+ let calls=0,release,revoked=false;
+ const gate=new Promise(resolve=>{release=resolve;});
+ const auth={async verifyIdToken(token,check){calls++;assert.equal(check,true);await gate;if(revoked)throw Error('revoked');return {uid:token};}};
+ const server=createHttpServer({auth,execute:async uid=>({uid}),admin:async()=>({}),adminUids:new Set(),origin:'https://fixture.invalid',webOrigins:[]});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ t.after(()=>new Promise(resolve=>{server.close(resolve);server.closeAllConnections();}));
+ const url=`http://127.0.0.1:${server.address().port}/online`;
+ const post=token=>fetch(url,{method:'POST',headers:{Authorization:`Bearer ${token}`,'Content-Type':'application/json'},body:JSON.stringify({data:{op:'poll'}})});
+ let received=0;
+ const arrived=new Promise(resolve=>server.on('request',()=>{if(++received===3)resolve();}));
+ const requests=[post('same'),post('same'),post('other')];
+ await arrived;
+ assert.equal(calls,2,'only identical overlapping tokens share verification');
+ release();
+ for(const response of await Promise.all(requests))assert.equal(response.status,200);
+ revoked=true;
+ assert.equal((await post('same')).status,401,'successful claims are never cached after completion');
+ assert.equal((await post('same')).status,401,'failures are removed too');
+ assert.equal(calls,4);
+});
