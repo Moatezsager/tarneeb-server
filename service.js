@@ -93,6 +93,8 @@ function createService(db, clock=Date.now, notifications){
   const rateLimits=new Map();
   // shortcut: five-second snapshots bound cross-instance staleness; use shared invalidation before scaling out.
   const pollCache=new Map();
+  // shortcut: one shared leaderboard snapshot per minute keeps Firestore reads low on Spark.
+  let leaderboardCache=null;
   // shortcut: usage counters are per process and reset on restart; they inspect cost, they are not billing.
   const stats={pollHits:0,pollSnapshots:0,roomWrites:0,mutations:0};
   const ref=p=>db.doc(p);
@@ -428,7 +430,7 @@ function createService(db, clock=Date.now, notifications){
     }
     fail('invalid-argument','عملية غير معروفة');
   }
-  const readOps=new Set(['poll','search','friends','requests','invites','listRooms','activeRoom','presence','ownProfile','publicProfile','store']);
+  const readOps=new Set(['poll','search','friends','requests','invites','listRooms','activeRoom','presence','ownProfile','publicProfile','store','leaderboard']);
   async function execute(uid,input){
     if(!id(uid))fail('unauthenticated','سجل دخولك أولًا');keys(input,['op','payload','requestId','protocolVersion']);if(input.protocolVersion!==VERSION)fail('failed-precondition','حدّث اللعبة إلى الإصدار الجديد');
     const op=str(input.op,1,32),d=input.payload??{},mutation=!readOps.has(op);if(mutation&&(!id(input.requestId)||input.requestId.length<16))fail('invalid-argument','معرّف عملية مطلوب');
@@ -441,6 +443,19 @@ function createService(db, clock=Date.now, notifications){
     const prior=rateLimits.get(uid),rate=prior?.window===window?prior:{window,count:0,sensitive:0};
     if(rate.count>=180||(sensitive&&rate.sensitive>=12))fail('resource-exhausted','طلبات كثيرة؛ انتظر دقيقة');
     rate.count++;if(sensitive)rate.sensitive++;rateLimits.set(uid,rate);
+    if(op==='leaderboard'){
+      keys(d,[]);
+      if(leaderboardCache&&now<leaderboardCache.until)return {items:leaderboardCache.items,updatedAt:leaderboardCache.updatedAt};
+      // Single-field index on economy.points is automatic; 40 docs leave room for
+      // filtered rows without needing a composite index.
+      const board=await db.collection('users').orderBy('economy.points','desc').limit(40).get();
+      const items=board.docs.map(doc=>({uid:doc.id,p:doc.data()||{}}))
+        .filter(({p})=>!p.deleting&&p.economy&&completeProfile(p)).slice(0,20)
+        .map(({uid,p})=>({uid,name:p.name,avatar:p.avatar,country:p.country||'',...cosmetics(p),
+          points:Math.max(0,Number(p.economy.points)||0),wins:Math.max(0,Number(p.economy.wins)||0),games:Math.max(0,Number(p.economy.games)||0)}));
+      leaderboardCache={until:now+60000,items,updatedAt:now};
+      return {items,updatedAt:now};
+    }
     if(op==='poll'){
       keys(d,['roomId','latencyMs']);
       if(!id(d.roomId))fail('invalid-argument','رمز غرفة غير صالح');
