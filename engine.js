@@ -1,6 +1,7 @@
 'use strict';
 // Server implementation of scripts/tarneeb_rules.gd. Card IDs and scoring are identical.
 const {randomInt} = require('node:crypto');
+const BOT_POLICY = Object.freeze(require('./bot-policy.json'));
 const BIDS = [0,2,3,4,5,7,8,9,10,11,12,13];
 const QUEEN = 10, ACE = 12;
 const suit = c => Math.floor(c / 13);
@@ -10,7 +11,7 @@ const clone = x => structuredClone(x);
 const sortHand = h => h.sort((a,b) => suit(a)-suit(b) || rank(b)-rank(a));
 const beats = (a,b) => (suit(a)===0 && suit(b)!==0) || (suit(a)===suit(b) && rank(a)>rank(b));
 function start(names, target, difficulty=1) {
-  const s = {names,mode:'FFA',target,difficulty,count:4,scores:[0,0,0,0],round:0,dealer:randomInt(4),winner:-1,history:[],revision:0,message:''};
+  const s = {names,mode:'FFA',target,difficulty,count:4,scores:[0,0,0,0],round:0,dealer:randomInt(4),winner:-1,history:[],revision:0,message:'',bot_policy:{...BOT_POLICY}};
   nextRound(s); return s;
 }
 function nextRound(s) {
@@ -20,10 +21,13 @@ function nextRound(s) {
   for(let i=51;i>0;i--){const j=randomInt(i+1);[deck[i],deck[j]]=[deck[j],deck[i]];}
   deck.forEach((c,i)=>s.hands[(s.dealer+1+i)%4].push(c));
   s.hands.forEach((h,p)=>{sortHand(h);s.exposed[p]=h[randomInt(13)];});
-  s.phase=s.round===1?'playing':'swapping'; s.king=0;
-  for(let p=1;p<4;p++) if(s.scores[p]>s.scores[s.king]) s.king=p;
+  s.phase=s.round===1?'playing':'swapping'; s.king=selectKing(s.scores,s.dealer);
   if(s.phase==='swapping') s.current=s.king;
   s.message=s.round===1?'الجولة الأولى • النقاط تبدأ من لمّتين':'الكنق يختار تبديل ورقته المكشوفة'; s.revision++;
+}
+function selectKing(scores,dealer){
+  const highest=Math.max(...scores);
+  for(let step=1;step<=4;step++){const seat=(dealer+step)%4;if(scores[seat]===highest)return seat;}
 }
 function bids(s,p){
   const score=s.scores[p],scoreFloor=score>=41?5:score>=31?4:score>=21?3:0;
@@ -155,13 +159,14 @@ function bidEstimate(hand,difficulty){
   return estimate+Math.max(0,hearts-3)*0.6+(difficulty===2?0.2:difficulty===0?-0.4:0);
 }
 function trickValue(s,p,seat,leader){
-  if(s.round===1)return seat===p?(s.taken[p]===1?50:24):seat===leader?-60:-4;
+  const targeted=leader.includes(seat);
+  if(s.round===1)return seat===p?(s.taken[p]===1?50:24):targeted?-60:-4;
   const bid=s.bids[seat],need=bid-s.taken[seat],remaining=13-s.tricks;
-  if(bid===0&&s.taken[seat]===0)return seat===p?-260:seat===leader?160:80;
+  if(bid===0&&s.taken[seat]===0)return seat===p?-260:targeted?160:80;
   if(need<=0||need>remaining)return seat===p?2:0;
   if(bid>=11&&need===1)return seat===p?500:-500;
   if(seat===p)return 30+60*need/remaining+(need===1?30:0);
-  return -(need===1?35:8)-(bid>=7?20:0)-(seat===leader?100:0);
+  return -(need===1?35:8)-(bid>=7?20:0)-(targeted?(seat===s.king?s.bot_policy.kingPressure:s.bot_policy.leaderPressure):0);
 }
 function playValue(s,p,card,winner,leader,hand,info){
   const wins=winner<0||beats(card,s.trick[winner]);
@@ -186,7 +191,7 @@ function playValue(s,p,card,winner,leader,hand,info){
     const master=!info.outstanding.some(c=>suit(c)===suit(card)&&beats(c,card));
     // A lost trick is a chance to shed losers, not future winners (except for a live nil).
     value+=(nil?1:-1)*rank(card)/4;
-    if(master&&!nil)value-=12;
+    if(master&&!nil)value-=s.bot_policy.preserveMaster;
     if((nil||!master)&&suit(card)!==suit(lead)&&hand.filter(c=>suit(c)===suit(card)).length===1)value+=6;
   }
   if(winner<0){
@@ -218,10 +223,20 @@ function playValue(s,p,card,winner,leader,hand,info){
   }
   return value;
 }
-function ai(s,p){
+function botObservation(s,p){
+  const observation={};
+  for(const key of ['phase','round','dealer','lead','current','king','difficulty','tricks','broken','scores','bids','taken','trick','played','exposed'])observation[key]=Array.isArray(s[key])?[...s[key]]:s[key];
+  // The king may only inspect exposed cards while swapping, including its own.
+  observation.hands=Array.from({length:4},(_,seat)=>seat===p&&s.phase!=='swapping'?[...s.hands[p]]:[]);
+  observation.bot_policy={...(s.bot_policy||BOT_POLICY)};
+  return observation;
+}
+function ai(state,p){
+  const s=botObservation(state,p);
   if(s.phase==='swapping'){
     let best=-1,value=swapValue(s.exposed[p]);
-    for(let seat=0;seat<4;seat++){
+    for(let step=1;step<4;step++){
+      const seat=(p+step)%4;
       if(seat===p||s.exposed[seat]<0)continue;
       const estimate=swapValue(s.exposed[seat]);
       if(estimate>value){best=seat;value=estimate;}
@@ -235,8 +250,8 @@ function ai(s,p){
     return {action:'bid',value:available.reduce((a,b)=>b<=desired?b:a,available[0])};
   }
   const hand=s.hands[p],cards=legal(s,p),winner=trickWinner(s);
-  const leader=s.scores.indexOf(Math.max(...s.scores));
-  const target=s.scores[leader]>s.scores[p]?leader:-1;
+  const highest=Math.max(...s.scores);
+  const target=[0,1,2,3].filter(seat=>seat!==p&&((s.scores[seat]===highest&&highest>s.scores[p])||(s.round>1&&seat===s.king)));
   const info=publicKnowledge(s,p);
   let best=cards[0],bestValue=-Infinity;
   for(const card of cards){
@@ -248,6 +263,7 @@ function ai(s,p){
 function view(s,p){
   const v=clone(s);
   delete v.hands;
+  delete v.bot_policy;
   v.hand_concealed=s.round>1&&p===s.king&&(s.phase==='swapping'||Boolean(s.presentation));
   v.hand=v.hand_concealed?[s.exposed[p]]:[...s.hands[p]];
   v.hand_counts=s.hands.map(h=>h.length);
@@ -256,4 +272,4 @@ function view(s,p){
   v.available_bids=s.phase==='bidding'&&s.current===p?bids(s,p):[];
   return v;
 }
-module.exports={start,nextRound,act,collect,ai,view,legal,bids,scoreBid,matchWinner,trickWinner};
+module.exports={start,nextRound,act,collect,ai,view,legal,bids,scoreBid,matchWinner,trickWinner,selectKing,botObservation};

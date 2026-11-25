@@ -1,0 +1,6 @@
+{
+  "version": "fair-king-v1",
+  "kingPressure": 180,
+  "leaderPressure": 100,
+  "preserveMaster": 12
+}
