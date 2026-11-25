@@ -186,7 +186,7 @@ function playValue(s,p,card,winner,leader,hand,info){
   const hearts=hand.filter(c=>suit(c)===0).length;
   const queenLive=!s.played.includes(QUEEN)&&!hand.includes(QUEEN)&&!s.trick.includes(QUEEN);
   // Save trumps when another player already denies the leader, but spend them to secure a contract.
-  if(winner>=0&&suit(lead)!==0&&suit(card)===0&&card!==QUEEN)value-=10+rank(card)/2;
+  if(winner>=0&&suit(lead)!==0&&suit(card)===0&&(card!==QUEEN||hand.includes(ACE)||s.played.includes(ACE)))value-=10+rank(card)/2;
   if(!wins&&suit(card)!==0){
     const master=!info.outstanding.some(c=>suit(c)===suit(card)&&beats(c,card));
     // A lost trick is a chance to shed losers, not future winners (except for a live nil).
@@ -210,15 +210,19 @@ function playValue(s,p,card,winner,leader,hand,info){
   }
   if(s.round>1&&card===QUEEN){
     if(s.trick.includes(ACE))value-=300;
-    else if(s.played.includes(ACE)||hand.includes(ACE)||(p+1)%4===s.lead)value+=72;
+    else if(s.played.includes(ACE)||hand.includes(ACE)){
+      // Without a hostile ace the queen is a valuable trump, not a liability.
+      if(!wins&&!nil)value-=s.bot_policy.preserveMaster+rank(card)/4;
+    }
+    else if((p+1)%4===s.lead)value+=72;
     else {
       const aceOwner=s.exposed.indexOf(ACE);
       let risk=0;
       for(let seat=(p+1)%4;seat!==s.lead;seat=(seat+1)%4){
-        if(seat===aceOwner)risk=overtake(s,seat,QUEEN,suit(lead),info);
-        else if(aceOwner<0&&!(s.exposed[seat]>=0&&suit(lead)!==0&&suit(s.exposed[seat])===suit(lead)))risk+=info.counts[seat]/Math.max(1,info.unseen.length);
+        if(seat===aceOwner)risk=suit(lead)===0?1:overtake(s,seat,ACE-1,suit(lead),info);
+        else if(aceOwner<0&&!info.voids[seat][0]&&!(s.exposed[seat]>=0&&suit(lead)!==0&&suit(s.exposed[seat])===suit(lead)))risk+=info.counts[seat]/Math.max(1,info.unseen.length);
       }
-      value+=18-100*Math.min(1,risk);
+      value+=risk===0?72:18-100*Math.min(1,risk);
     }
   }
   return value;

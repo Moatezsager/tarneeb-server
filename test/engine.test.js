@@ -82,7 +82,7 @@ test('successful 11–13 bids end the match on the deciding trick',()=>{
 });
 test('bots can spoil nil, block the leader and manage the queen from public information',()=>{
   const s=e.start(['a','b','c','d'],61,2);
-  Object.assign(s,{round:2,phase:'playing',lead:0,current:3,bids:[0,2,2,3],taken:[0,0,0,0],
+  Object.assign(s,{round:2,phase:'playing',dealer:3,king:0,lead:0,current:3,bids:[0,2,2,3],taken:[0,0,0,0],
     trick:[21,16,17,-1],exposed:[-1,-1,-1,-1],hands:[[],[],[],[13,25]]});
   assert.equal(e.ai(s,3).value,13);
   s.scores[0]=55;assert.equal(e.ai(s,3).value,13,'give the nil-bidding leader a trick to break their contract');

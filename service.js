@@ -1,4 +1,5 @@
 'use strict';
+const {react:botReact}=require('./bot-reactions');
 const {randomBytes,randomInt,scryptSync,timingSafeEqual,createHash} = require('node:crypto');
 const {Timestamp} = require('firebase-admin/firestore');
 const {AppError:HttpsError} = require('./errors');
@@ -45,7 +46,7 @@ function presenceView(p={},now=Date.now()){
 }
 function safeProfile(p,now=Date.now()){return {uid:p.uid,name:p.name,searchId:p.searchId,country:p.country,gender:p.gender,avatar:p.avatar,...cosmetics(p),points:p.points||0,...(p.showAge===true&&Number.isInteger(p.age)&&p.age>=1&&p.age<=120?{age:p.age}:{}),status:presenceView(p,now).status};}
 function player(p,index){return {uid:p.uid,name:p.name,avatar:p.avatar,...cosmetics(p),country:p.country,index,status:'connected'};}
-function publicRoom(r){const {secret,gameState,chatCooldown,chat,...data}=r;return {...data,createdAt:r.createdAt.toMillis(),updatedAt:r.updatedAt.toMillis(),expiresAt:r.expiresAt.toMillis()};}
+function publicRoom(r){const {secret,gameState,chatCooldown,chat,botReaction,...data}=r;return {...data,createdAt:r.createdAt.toMillis(),updatedAt:r.updatedAt.toMillis(),expiresAt:r.expiresAt.toMillis()};}
 function passwordHash(password,salt){return scryptSync(password,salt,32).toString('hex');}
 function gate(state,kind,ms,now){state.presentation=kind;state.presentationUntil=now+ms;state.turnDueAt=now+ms;}
 function shuffleSeats(room){
@@ -75,7 +76,7 @@ function advance(state,room,now){
     engine.nextRound(state);state.swap_preview={};gate(state,'reveal',4500,now);return true;
   }
   if(now<state.turnDueAt)return false;
-  if(state.phase==='collecting')engine.collect(state);
+  if(state.phase==='collecting'){engine.collect(state);botReact(room,state,now);}
   else {const a=engine.ai(state,state.current),before=[...state.exposed],p=state.current;engine.act(state,p,a.action,a.value);if(a.action==='swap'){state.swap_preview={king:p,target:a.value,before};gate(state,'swap_result',3200,now);return true;}}
   nextDeadline(state,room,now);return true;
 }
@@ -86,7 +87,7 @@ function reply(room,state,uid,now){
     // The client renders last_trick, trap, results and hand_counts only; sending full history on every poll wastes bandwidth.
     delete view.history;delete view.played;delete view.round_start_scores;}
   if(state?.phase==='round_end'&&state.winner<0){view.ready_seats=readySeats(state,room);delete view.readyUids;}
-  return {room:{...publicRoom(room),chat:room.chat||[]},view,serverTime:now};
+  return {room:{...publicRoom(room),chat:(room.chat||[]).filter(message=>!message.bot||now-message.at<=10000)},view,serverTime:now};
 }
 function createService(db, clock=Date.now, notifications){
   // shortcut: single-instance memory limits reset on restart; share counters before scaling out.

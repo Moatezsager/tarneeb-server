@@ -527,3 +527,20 @@ test('maintenance clears expired results, abandoned rooms and orphaned seat poin
     assert(!(await ref.get()).exists,ref.path);
   }
 });
+
+
+test('bot reactions persist with public outcomes without exposing cooldown state',{skip:!enabled},async()=>{
+  const uid='reactionHost';await call(uid,'profile',{name:'Reaction host',age:25,gender:'male',country:'LY',avatar:'avatar_1',complete:true});
+  const created=await call(uid,'createRoom',{mode:'FFA',target:61,difficulty:2,isPublic:true,password:''}),roomId=created.room._id;
+  await call(uid,'fillBots',{roomId});const started=await call(uid,'start',{roomId});
+  const target=started.view.seat,sender=started.room.botSeats[0],secretRef=db.doc(`roomSecrets/${roomId}`);
+  const secret=(await secretRef.get()).data(),state=JSON.parse(secret.state);
+  Object.assign(state,{round:2,phase:'collecting',presentation:'',bids:[2,2,2,2],taken:[0,0,0,0],tricks:2,lead:target,trick:[13,14,15,16],turnDueAt:now-1});
+  state.trick[target]=10;state.trick[sender]=12;
+  await secretRef.update({state:JSON.stringify(state)});
+  const result=await call(uid,'poll',{roomId});
+  assert.equal(result.room.chat.length,1);assert.equal(result.room.chat[0].text,`🥊 ${target}`);
+  assert.equal(result.room.chat[0].seat,sender);assert.equal(result.room.botReaction,undefined);
+  assert.equal((await call(uid,'poll',{roomId})).room.chat.length,1);
+  await call(uid,'leave',{roomId});
+});
