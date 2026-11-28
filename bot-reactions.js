@@ -22,6 +22,6 @@ function react(room,state,now){
   room.botReaction={round:state.round,count:(sameRound?previous.count:0)+1,at:now,
     target:target>=0?target:(previous.target??-1),targetAt:target>=0?now:(previous.targetAt??0)};
   room.chat=[...(room.chat||[]),{id:`bot-${state.round}-${state.tricks}`,uid:`bot:${sender}`,
-    bot:true,seat:sender,name:state.names[sender],text,at:now}].slice(-12);
+    bot:true,seat:sender,name:state.names[sender],text,at:now,round:state.round,phase:state.phase}].slice(-12);
 }
 module.exports={react};

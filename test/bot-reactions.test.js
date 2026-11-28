@@ -7,7 +7,7 @@ const state=()=>({round:2,tricks:3,last_trick:[10,12,13,14],lead:1,phase:'playin
 test('bot reacts to public queen capture once with bounded room and target cooldowns',()=>{
   const r=room(),s=state();
   s.hands=new Proxy([],{get(){throw Error('Reactions must not inspect private cards');}});
-  react(r,s,1000);assert.equal(r.chat.length,1);assert.equal(r.chat[0].text,'🥊 0');assert.equal(r.chat[0].seat,1);
+  react(r,s,1000);assert.equal(r.chat.length,1);assert.equal(r.chat[0].text,'🥊 0');assert.equal(r.chat[0].seat,1);assert.equal(r.chat[0].round,2);assert.equal(r.chat[0].phase,'playing');
   react(r,s,1000);assert.equal(r.chat.length,1);
   react(r,{...s,tricks:4},47000);assert.equal(r.chat.length,1,'same target protected for 90 seconds');
   react(r,{...s,tricks:5},92000);assert.equal(r.chat.length,2);

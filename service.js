@@ -360,7 +360,7 @@ function createService(db, clock=Date.now, notifications){
       const cooldown=r.chatCooldown||{};
       if(now-(cooldown[uid]??0)<3000)fail('resource-exhausted','انتظر ثلاث ثوانٍ بين الرسائل');
       r.chatCooldown=Object.fromEntries(r.memberUids.map(member=>[member,member===uid?now:(cooldown[member]||0)]));
-      r.chat=[...(r.chat||[]),{id:randomBytes(12).toString('hex'),uid,name:sender.name,text,at:now}].slice(-12);
+      r.chat=[...(r.chat||[]),{id:randomBytes(12).toString('hex'),uid,name:sender.name,text,at:now,round:state?.round||0,phase:state?.phase||'waiting'}].slice(-12);
       r.revision++;r.updatedAt=stamp(now);
       // Chat shares the existing poll response and never rewrites cards or turn deadlines.
       tx.update(ref(`rooms/${r._id}`),{chat:r.chat,chatCooldown:r.chatCooldown,revision:r.revision,updatedAt:r.updatedAt});

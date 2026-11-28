@@ -308,6 +308,9 @@ test('room chat is member-only, bounded, idempotent and independent of game turn
   const requestId=rid(),payload={roomId,text:'Good game!'};
   const responses=await Promise.all([call('chatHost','chat',payload,requestId),call('chatHost','chat',payload,requestId)]);
   assert.deepEqual(responses[0],responses[1]);assert.equal(responses[0].room.chat.length,2);
+  assert.equal(responses[0].room.chat[0].round,0);assert.equal(responses[0].room.chat[0].phase,'waiting');
+  assert.equal(responses[0].room.chat[1].round,1);assert.equal(responses[0].room.chat[1].phase,'playing');
+  await reject(call('chatHost','chat',{roomId,text:'forged context',round:99}),'invalid-argument');
   assert.equal(responses[0].room.chat[1].name,'chatHost');assert(!('chatCooldown' in responses[0].room));
   await reject(call('chatHost','chat',{roomId,text:'too soon'}),'resource-exhausted');
   for(let i=0;i<13;i++){now+=3100;await call('chatHost','chat',{roomId,text:`message ${i}`});}
